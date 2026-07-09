@@ -1,8 +1,9 @@
 use bevy::{
     prelude::*,
     reflect::TypePath,
-    render::render_resource::{AsBindGroup, ShaderRef},
-    sprite::{Material2d, Material2dPlugin, MaterialMesh2dBundle},
+    render::render_resource::AsBindGroup,
+    sprite_render::{Material2d, Material2dPlugin},
+    shader::ShaderRef,
 };
 
 fn main() {
@@ -32,20 +33,19 @@ fn setup(
     mut materials: ResMut<Assets<GradientMaterial>>,
     windows: Query<&Window>,
 ) {
-    let window = windows.single();
+    let window = windows.single().unwrap();
     let width = window.resolution.width();
     let height = window.resolution.height();
 
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera2d);
 
-    commands.spawn(MaterialMesh2dBundle {
-        mesh: meshes.add(Rectangle::new(width, height)).into(),
-        material: materials.add(GradientMaterial {
+    commands.spawn((
+        Mesh2d(meshes.add(Rectangle::new(width, height))),
+        MeshMaterial2d(materials.add(GradientMaterial {
             params: Vec4::new(0.0, 0.0, 0.0, 0.0),
-        }),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
-        ..default()
-    });
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+    ));
 }
 
 fn update_time(
@@ -53,6 +53,6 @@ fn update_time(
     mut materials: ResMut<Assets<GradientMaterial>>,
 ) {
     for (_, material) in materials.iter_mut() {
-        material.params.x = time.elapsed_seconds();
+        material.params.x = time.elapsed_secs();
     }
 }
