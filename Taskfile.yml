@@ -1,0 +1,48 @@
+version: '3'
+
+tasks:
+  run-game:
+    desc: Run the graphical Bevy snake game
+    cmds:
+      - cargo run -p animals_game
+
+  play:
+    desc: Play the Snake game manually
+    cmds:
+      - cargo run -p animals_game
+
+  play-ai:
+    desc: Watch the AI play the Snake game using the trained model (Ensure run-ai-server is running!)
+    cmds:
+      - cargo run -p animals_game -- --ai
+
+  run-ai-server:
+    desc: Start the Python TCP inference server
+    dir: learner
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.play
+
+  train:
+    desc: "Train the python ML model. Usage: task train STEPS=500000"
+    dir: learner
+    vars:
+      STEPS: '{{default "100000" .STEPS}}'
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.main --steps {{.STEPS}}
+
+  export-model:
+    desc: Export the trained SB3 model weights to a JSON file
+    dir: learner
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.export_weights
+
+  build-sim:
+    desc: Build the PyO3 module for the simulation
+    dir: animals_simulation
+    cmds:
+      - PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop
+
+  check:
+    desc: Check the Rust workspace compilation
+    cmds:
+      - PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check

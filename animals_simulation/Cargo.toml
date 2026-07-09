@@ -1,0 +1,12 @@
+[package]
+name = "animals_simulation"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "animals_simulation"
+crate-type = ["cdylib"]
+
+[dependencies]
+animals_engine = { version = "0.1.0", path = "../animals_engine" }
+pyo3 = { version = "0.22", features = ["extension-module"] }

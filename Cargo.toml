@@ -2,5 +2,6 @@
 resolver = "2"
 members = [
     "animals_game",
-    "animals_engine"
+    "animals_engine",
+    "animals_simulation"
 ]
