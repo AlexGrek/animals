@@ -1,29 +1,16 @@
 [
     {
-        "length": 1,
-        "score": 0,
+        "length": 2,
+        "score": 1,
         "kills": 0,
         "is_dead": false,
         "death_by_wall": false,
         "death_by_self": false,
         "death_by_opponent": false,
-        "model": "models/snake_model.zip",
-        "total_apples_eaten": 0,
+        "model": "models/snake_model_3.zip",
+        "total_apples_eaten": 1,
         "total_kills": 0,
         "total_deaths": 0
-    },
-    {
-        "length": 5,
-        "score": 4,
-        "kills": 0,
-        "is_dead": false,
-        "death_by_wall": false,
-        "death_by_self": false,
-        "death_by_opponent": false,
-        "model": "models/snake_model.zip",
-        "total_apples_eaten": 11,
-        "total_kills": 0,
-        "total_deaths": 5
     },
     {
         "length": 1,
@@ -36,19 +23,19 @@
         "model": "models/snake_model.zip",
         "total_apples_eaten": 0,
         "total_kills": 0,
-        "total_deaths": 0
+        "total_deaths": 97
     },
     {
-        "length": 3,
-        "score": 2,
+        "length": 1,
+        "score": 0,
         "kills": 0,
         "is_dead": false,
         "death_by_wall": false,
         "death_by_self": false,
         "death_by_opponent": false,
         "model": "models/snake_model.zip",
-        "total_apples_eaten": 13,
-        "total_kills": 2,
-        "total_deaths": 5
+        "total_apples_eaten": 0,
+        "total_kills": 0,
+        "total_deaths": 97
     }
 ]

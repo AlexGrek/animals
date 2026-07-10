@@ -133,6 +133,15 @@ fn main() {
         }
     }
 
+    let mut num_preys = 1;
+    if let Some(idx) = args.iter().position(|arg| arg == "--preys") {
+        if idx + 1 < args.len() {
+            if let Ok(n) = args[idx + 1].parse::<usize>() {
+                num_preys = n;
+            }
+        }
+    }
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -146,7 +155,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.2, 0.6, 0.2)))
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes)))
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys)))
         .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
@@ -176,9 +185,12 @@ fn snake_color(idx: usize, total: usize) -> Color {
 /// Flattens every snake's observation into one `num_snakes * 130` buffer, in the
 /// same layout the Python server expects.
 fn gather_observations(game: &GameState) -> Vec<f32> {
-    let mut obs = Vec::with_capacity(game.snakes.len() * 66);
+    let mut obs = Vec::with_capacity(game.snakes.len() * 66 + game.preys.len() * 64);
     for s in 0..game.snakes.len() {
         obs.extend_from_slice(&game.get_relative_observation(s));
+    }
+    for p in 0..game.preys.len() {
+        obs.extend_from_slice(&game.get_prey_observation(p));
     }
     obs
 }
@@ -186,13 +198,13 @@ fn gather_observations(game: &GameState) -> Vec<f32> {
 /// Spawns the background thread that owns `stream` and services inference
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
-fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
+fn spawn_ai_worker(mut stream: TcpStream, num_preys: usize) -> AiWorkerHandle {
     let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<Vec<i32>>();
 
     std::thread::spawn(move || {
         while let Ok(obs) = obs_rx.recv() {
-            let num_snakes = obs.len() / 66;
+            let num_snakes = (obs.len() - num_preys * 64) / 66;
 
             let mut payload = vec![0u8; obs.len() * 4];
             for (i, &val) in obs.iter().enumerate() {
@@ -202,13 +214,13 @@ fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
                 break;
             }
 
-            let mut action_bytes = vec![0u8; num_snakes * 4];
+            let mut action_bytes = vec![0u8; (num_snakes + num_preys) * 4];
             if stream.read_exact(&mut action_bytes).is_err() {
                 break;
             }
 
-            let mut actions = Vec::with_capacity(num_snakes);
-            for s in 0..num_snakes {
+            let mut actions = Vec::with_capacity(num_snakes + num_preys);
+            for s in 0..(num_snakes + num_preys) {
                 let off = s * 4;
                 actions.push(i32::from_le_bytes(action_bytes[off..off + 4].try_into().unwrap()));
             }
@@ -332,10 +344,20 @@ fn spawn_ai_server(
     status: &mut AppStatus,
 ) {
     let mut model_paths = Vec::new();
+    let mut prey_model_paths = Vec::new();
+    let mut num_preys = 1;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--model" && i + 1 < args.len() {
             model_paths.push(args[i + 1].clone());
+            i += 1;
+        } else if args[i] == "--prey-model" && i + 1 < args.len() {
+            prey_model_paths.push(args[i + 1].clone());
+            i += 1;
+        } else if args[i] == "--preys" && i + 1 < args.len() {
+            if let Ok(n) = args[i + 1].parse::<usize>() {
+                num_preys = n;
+            }
             i += 1;
         }
         i += 1;
@@ -345,19 +367,24 @@ fn spawn_ai_server(
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    println!("Spawning AI inference server on port {} with {} snakes...", port, num_snakes);
+    println!("Spawning AI inference server on port {} with {} snakes and {} preys...", port, num_snakes, num_preys);
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let learner_dir = format!("{}/../learner", manifest_dir);
 
     let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string()])
+    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string(), "--preys", &num_preys.to_string()])
        .current_dir(learner_dir)
        .env("PYTHONPATH", "src");
 
     for m in model_paths {
         cmd.arg("--model");
         cmd.arg(m);
+    }
+
+    for pm in prey_model_paths {
+        cmd.arg("--prey-model");
+        cmd.arg(pm);
     }
 
     cmd.stderr(std::process::Stdio::piped());
@@ -403,6 +430,7 @@ fn poll_ai_connection(
     mut ai_worker: ResMut<AiWorker>,
     mut status: ResMut<AppStatus>,
     mut commands: Commands,
+    engine: Res<GameEngine>,
 ) {
     let Some(mut pending) = pending else { return };
 
@@ -433,7 +461,8 @@ fn poll_ai_connection(
         Ok(stream) => {
             stream.set_nodelay(true).ok();
             println!("Connected to AI inference server!");
-            ai_worker.0 = Some(spawn_ai_worker(stream));
+            let num_preys = engine.0.preys.len();
+            ai_worker.0 = Some(spawn_ai_worker(stream, num_preys));
             *status = AppStatus::Running;
             commands.remove_resource::<PendingConnection>();
         }
@@ -491,7 +520,8 @@ fn keyboard_input(
         // Restart the game — works whether it's still running, over, or the
         // AI server failed.
         let num_snakes = engine.0.snakes.len();
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes);
+        let num_preys = engine.0.preys.len();
+        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys);
 
         // Despawn old map and spawn new map
         for entity in map_query.iter() {
@@ -563,13 +593,19 @@ fn game_tick(
 
         match worker.act_rx.try_recv() {
             Ok(actions) => {
-                for s in 0..engine.0.snakes.len() {
+                let num_snakes = engine.0.snakes.len();
+                for s in 0..num_snakes {
                     if let Some(&a) = actions.get(s) {
                         let rel = RelativeAction::from_usize(a as usize);
                         let dir = rel.to_absolute_direction(engine.0.snakes[s].direction);
                         engine.0.set_direction(s, dir);
                     }
                 }
+                let prey_actions: Vec<usize> = actions[num_snakes..]
+                    .iter()
+                    .map(|&a| a as usize)
+                    .collect();
+                engine.0.step(1.0, &prey_actions);
                 worker.awaiting = false;
             }
             Err(TryRecvError::Empty) => return, // not ready; keep rendering, retry next tick
@@ -578,15 +614,24 @@ fn game_tick(
                 std::process::exit(1);
             }
         }
+    } else {
+        let num_preys = engine.0.preys.len();
+        let prey_actions = vec![0; num_preys];
+        engine.0.step(1.0, &prey_actions);
     }
-
-    engine.0.step(1.0);
 
     // The engine no longer ends the game itself on death (it respawns dead
     // snakes in place so training episodes aren't truncated across the whole
     // game). For the visualizer/manual-play we still want a clear "game over,
     // press Space to restart" moment, so detect any death here and freeze.
-    if engine.0.snakes.iter().any(|s| s.is_dead) {
+    let alive_count = engine.0.snakes.iter().filter(|s| !s.is_dead).count();
+    let num_snakes = engine.0.snakes.len();
+    let is_over = if num_snakes > 1 {
+        alive_count <= 1
+    } else {
+        alive_count == 0
+    };
+    if is_over {
         engine.0.game_over = true;
     }
     dirty.0 = true;
@@ -651,21 +696,25 @@ fn render_sync(
     let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
     let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
 
-    // 2. Draw Apple
-    let apple_pos = engine.0.apple_pos;
-    commands.spawn((
-        Sprite {
-            color: Color::srgb(1.0, 0.0, 0.0),
-            custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
-            ..default()
-        },
-        Transform::from_xyz(
-            apple_pos.0 as f32 * TILE_SIZE - offset_x,
-            apple_pos.1 as f32 * TILE_SIZE - offset_y,
-            0.0,
-        ),
-        Apple,
-    ));
+    // 2. Draw Preys
+    for prey in &engine.0.preys {
+        if !prey.is_dead {
+            let prey_pos = prey.pos;
+            commands.spawn((
+                Sprite {
+                    color: Color::srgb(1.0, 0.5, 0.0), // Draw prey as orange
+                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    prey_pos.0 * TILE_SIZE - offset_x,
+                    prey_pos.1 * TILE_SIZE - offset_y,
+                    0.0,
+                ),
+                Apple,
+            ));
+        }
+    }
 
     // 3. Draw Snake Bodies
     let num_snakes = engine.0.snakes.len();

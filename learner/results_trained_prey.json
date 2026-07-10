@@ -1,0 +1,35 @@
+{
+    "snakes": [
+        {
+            "length": 3,
+            "score": 2,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "model": "models/snake_model.zip",
+            "total_apples_eaten": 2,
+            "total_kills": 0,
+            "total_deaths": 1
+        },
+        {
+            "length": 3,
+            "score": 2,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "model": "models/snake_model.zip",
+            "total_apples_eaten": 2,
+            "total_kills": 0,
+            "total_deaths": 1
+        }
+    ],
+    "prey": {
+        "model": "models/prey_model.zip",
+        "total_deaths": 4,
+        "ticks_survived": 9996
+    }
+}

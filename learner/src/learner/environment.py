@@ -74,7 +74,7 @@ class RustMultiSnakeVecEnv(VecEnv):
                 "Please build the Rust subproject using maturin (e.g. 'task build-sim')."
             )
 
-        self.games = [animals_simulation.Simulation(self.snakes_per_game) for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(self.snakes_per_game, 1) for _ in range(num_games)]
         
         # Global Buffers for ALL snakes
         self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
@@ -101,6 +101,7 @@ class RustMultiSnakeVecEnv(VecEnv):
 
     def step_wait(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[Dict[str, Any]]]:
         # 1. Compute actions for all snakes
+        # ...
         all_actions = np.zeros(self.total_snakes, dtype=int)
         
         # Place training actions
@@ -112,26 +113,17 @@ class RustMultiSnakeVecEnv(VecEnv):
             indices = self.model_indices[name]
             if len(indices) > 0:
                 obs_for_model = self.all_obs[indices]
-                # Predict stochastic actions for diverse gameplay
                 actions, _ = model.predict(obs_for_model, deterministic=False)
                 for i, idx in enumerate(indices):
                     all_actions[idx] = actions[i]
 
-        # 2. Step all games
-        # Snakes now respawn per-death inside the Rust engine instead of the
-        # whole game resetting when any one snake dies (that used to truncate
-        # every other snake's episode too, and biased the value function since
-        # SB3 was never told those were truncations rather than true terminals).
-        # game.step() returns per-snake dones plus the pre-respawn terminal
-        # observation for any snake that died this tick; the "obs" it returns
-        # is always the valid next observation (post-respawn where relevant),
-        # so there is no need to call game.reset() here any more.
         for i, game in enumerate(self.games):
             start_idx = i * self.snakes_per_game
             end_idx = start_idx + self.snakes_per_game
             actions_list = all_actions[start_idx:end_idx].tolist()
 
-            obs_list, rews_list, dones_list, terminal_obs_list = game.step(actions_list)
+            prey_action = [random.randint(0, 4)]
+            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _ = game.step(actions_list, prey_action)
 
             for s in range(self.snakes_per_game):
                 idx = start_idx + s

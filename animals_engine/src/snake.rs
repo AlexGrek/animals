@@ -11,6 +11,8 @@ pub struct SnakeState {
     pub death_by_wall: bool,
     pub death_by_self: bool,
     pub death_by_opponent: bool,
+    pub death_by_hunger: bool,
+    pub steps_since_last_eat: u32,
 }
 
 impl SnakeState {
@@ -25,6 +27,8 @@ impl SnakeState {
             death_by_wall: false,
             death_by_self: false,
             death_by_opponent: false,
+            death_by_hunger: false,
+            steps_since_last_eat: 0,
         }
     }
 }
