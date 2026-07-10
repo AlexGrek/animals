@@ -176,7 +176,7 @@ fn snake_color(idx: usize, total: usize) -> Color {
 /// Flattens every snake's observation into one `num_snakes * 130` buffer, in the
 /// same layout the Python server expects.
 fn gather_observations(game: &GameState) -> Vec<f32> {
-    let mut obs = Vec::with_capacity(game.snakes.len() * 130);
+    let mut obs = Vec::with_capacity(game.snakes.len() * 66);
     for s in 0..game.snakes.len() {
         obs.extend_from_slice(&game.get_relative_observation(s));
     }
@@ -192,7 +192,7 @@ fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
 
     std::thread::spawn(move || {
         while let Ok(obs) = obs_rx.recv() {
-            let num_snakes = obs.len() / 130;
+            let num_snakes = obs.len() / 66;
 
             let mut payload = vec![0u8; obs.len() * 4];
             for (i, &val) in obs.iter().enumerate() {

@@ -57,11 +57,11 @@ class RustMultiSnakeVecEnv(VecEnv):
         # Action space: 3 discrete actions (0: Straight, 1: Turn Right, 2: Turn Left)
         action_space = spaces.Discrete(3)
         
-        # Observation space: 130 floats (8x8 grid + 2D global direction to apple)
+        # Observation space: 66 floats (8x8 grid + 2D global direction to apple)
         observation_space = spaces.Box(
             low=-1.0, 
             high=1.0, 
-            shape=(130,), 
+            shape=(66,), 
             dtype=np.float32
         )
         
@@ -77,7 +77,7 @@ class RustMultiSnakeVecEnv(VecEnv):
         self.games = [animals_simulation.Simulation(self.snakes_per_game) for _ in range(num_games)]
         
         # Global Buffers for ALL snakes
-        self.all_obs = np.zeros((self.total_snakes, 130), dtype=np.float32)
+        self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
         self.all_rews = np.zeros((self.total_snakes,), dtype=np.float32)
         self.all_dones = np.zeros((self.total_snakes,), dtype=bool)
         self.all_infos = [{} for _ in range(self.total_snakes)]
@@ -93,7 +93,7 @@ class RustMultiSnakeVecEnv(VecEnv):
             
         # Return only training observations
         if self.training_count == 0:
-            return np.zeros((0, 130), dtype=np.float32)
+            return np.zeros((0, 66), dtype=np.float32)
         return np.copy(self.all_obs[self.training_indices])
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -150,7 +150,7 @@ class RustMultiSnakeVecEnv(VecEnv):
 
         # 3. Extract and return training snake data
         if self.training_count == 0:
-             return np.zeros((0, 130), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
+             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         buf_obs = self.all_obs[self.training_indices]
         buf_rews = self.all_rews[self.training_indices]
@@ -233,7 +233,7 @@ class MultiProcRustVecEnv(VecEnv):
             self.processes.append(process)
             work_remote.close()
             
-        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(130,), dtype=np.float32)
+        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(66,), dtype=np.float32)
         action_space = spaces.Discrete(3)
         
         self.training_counts = []
@@ -250,12 +250,12 @@ class MultiProcRustVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         
         if self.num_envs == 0:
-            return np.zeros((0, 130), dtype=np.float32)
+            return np.zeros((0, 66), dtype=np.float32)
             
         # We need to filter out empty arrays (e.g. if a proc has 0 training count)
         valid_results = [r for r in results if len(r) > 0]
         if not valid_results:
-             return np.zeros((0, 130), dtype=np.float32)
+             return np.zeros((0, 66), dtype=np.float32)
         return np.concatenate(valid_results)
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -278,7 +278,7 @@ class MultiProcRustVecEnv(VecEnv):
             merged_infos.extend(info_list)
             
         if self.num_envs == 0:
-             return np.zeros((0, 130), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
+             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         return np.concatenate([o for o in obs_list if len(o) > 0]), \
                np.concatenate([r for r in rews_list if len(r) > 0]), \

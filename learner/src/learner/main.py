@@ -97,7 +97,7 @@ def main():
         model = PPO(
             "MlpPolicy",
             env,
-            policy_kwargs=dict(net_arch=[256, 256, 256]),
+            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
             verbose=1,
             device="cpu",
             batch_size=4096,

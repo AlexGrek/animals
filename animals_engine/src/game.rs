@@ -235,8 +235,8 @@ impl GameState {
         }
     }
 
-    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 130] {
-        let mut obs = [0.0; 130];
+    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 66] {
+        let mut obs = [0.0; 66];
         let snake = &self.snakes[snake_index];
         if snake.body.is_empty() { return obs; }
 
@@ -255,14 +255,12 @@ impl GameState {
                 let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
                 let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
                 
-                obs[idx * 2 + 1] = terrain.speed();
-
-                if cell == self.apple_pos {
-                    obs[idx * 2] = 1.0;
+                let cell_val = if cell == self.apple_pos {
+                    1.0
                 } else if out_of_bounds || terrain == Terrain::Rock {
-                    obs[idx * 2] = -1.0;
+                    -1.0
                 } else if snake.body.contains(&cell) {
-                    obs[idx * 2] = -1.0;
+                    -1.0
                 } else {
                     let mut is_enemy = false;
                     for j in 0..self.snakes.len() {
@@ -272,11 +270,13 @@ impl GameState {
                         }
                     }
                     if is_enemy {
-                        obs[idx * 2] = -0.5;
+                        -0.5
                     } else {
-                        obs[idx * 2] = 0.0;
+                        terrain.speed() * 0.5
                     }
-                }
+                };
+                
+                obs[idx] = cell_val;
                 idx += 1;
             }
         }
@@ -284,8 +284,8 @@ impl GameState {
         let dx = self.apple_pos.0 - head.0;
         let dy = self.apple_pos.1 - head.1;
         let max_dim = self.grid_width.max(self.grid_height) as f32;
-        obs[128] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
-        obs[129] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
+        obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
+        obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
 
         obs
     }

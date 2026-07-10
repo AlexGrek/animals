@@ -49,21 +49,31 @@ impl Simulation {
             }
         }
 
+        let old_apple_pos = self.game_state.apple_pos;
+        let dist = |pos: (f32, f32)| -> f32 {
+            let dx = pos.0 - old_apple_pos.0 as f32;
+            let dy = pos.1 - old_apple_pos.1 as f32;
+            (dx * dx + dy * dy).sqrt()
+        };
+
         let prev_scores: Vec<u32> = self.game_state.snakes.iter().map(|s| s.score).collect();
         let prev_kills: Vec<u32> = self.game_state.snakes.iter().map(|s| s.kills).collect();
+        let prev_dists: Vec<f32> = self.game_state.snakes.iter().map(|s| dist(s.head_pos)).collect();
 
         self.game_state.step(1.0);
 
         // Reward function
-        let calc_reward = |snake: &animals_engine::SnakeState, prev_score: u32, prev_kills: u32| -> f32 {
+        let calc_reward = |snake: &animals_engine::SnakeState, prev_score: u32, prev_kills: u32, prev_dist: f32| -> f32 {
             if snake.is_dead {
-                -10.0 // Wall, Self, Opponent, or Head-to-head
+                -3.0 // Reduced death penalty to encourage exploration
             } else if snake.kills > prev_kills {
                 50.0 // Huge reward for killing the opponent!
             } else if snake.score > prev_score {
-                10.0 // Big reward for eating apple
+                30.0 // Increased apple reward to incentivize eating
             } else {
-                -0.01 // Small penalty to encourage efficiency
+                let current_dist = dist(snake.head_pos);
+                let dist_reward = (prev_dist - current_dist) * 0.15; // Slightly stronger distance reward
+                -0.01 + dist_reward // Small step penalty + dense distance reward
             }
         };
 
@@ -73,14 +83,14 @@ impl Simulation {
 
         for i in 0..num_snakes {
             let done = self.game_state.snakes[i].is_dead;
-            let reward = calc_reward(&self.game_state.snakes[i], prev_scores[i], prev_kills[i]);
+            let reward = calc_reward(&self.game_state.snakes[i], prev_scores[i], prev_kills[i], prev_dists[i]);
             rewards.push(reward);
             dones.push(done);
             if done {
                 // Capture the terminal observation before this snake is respawned.
                 terminal_obs.push(self.game_state.get_relative_observation(i).to_vec());
             } else {
-                terminal_obs.push(vec![0.0; 130]);
+                terminal_obs.push(vec![0.0; 66]);
             }
         }
 

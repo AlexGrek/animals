@@ -47,8 +47,8 @@ def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     
-    bytes_expected = num_snakes * 130 * 4
-    floats_expected = num_snakes * 130
+    bytes_expected = num_snakes * 66 * 4
+    floats_expected = num_snakes * 66
     
     try:
         server.bind(("127.0.0.1", args.port))
@@ -76,7 +76,7 @@ def main():
                         break # Connection closed
                         
                     unpacked = struct.unpack(f'<{floats_expected}f', data)
-                    obs = np.array(unpacked, dtype=np.float32).reshape(num_snakes, 130)
+                    obs = np.array(unpacked, dtype=np.float32).reshape(num_snakes, 66)
                     
                     actions = []
                     for i in range(num_snakes):
