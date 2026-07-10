@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use pyo3::prelude::*;
 use animals_engine::{GameState, RelativeAction, HUNGER_LIMIT, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
 

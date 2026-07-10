@@ -7,6 +7,8 @@ use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::asset::RenderAssetUsages;
 const GRID_WIDTH: i32 = 400;
 const GRID_HEIGHT: i32 = 400;
 const TILE_SIZE: f32 = 6.0;
@@ -117,94 +119,87 @@ struct StatusText;
 struct SnakeSegment;
 
 #[derive(Component)]
+struct Particle {
+    velocity: Vec2,
+    lifetime: Timer,
+}
+
+fn update_particles(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut Transform, &mut Sprite, &mut Particle)>,
+) {
+    let dt = time.delta();
+    let dt_secs = time.delta_secs();
+    for (entity, mut transform, mut sprite, mut particle) in query.iter_mut() {
+        if particle.lifetime.tick(dt).just_finished() {
+            commands.entity(entity).despawn();
+        } else {
+            transform.translation.x += particle.velocity.x * dt_secs;
+            transform.translation.y += particle.velocity.y * dt_secs;
+            
+            let remaining = particle.lifetime.fraction_remaining();
+            sprite.color.set_alpha(remaining * 0.8);
+        }
+    }
+}
+
+#[derive(Component)]
 struct Apple;
 
 #[derive(Component)]
 struct MapTile;
 
-fn spawn_map(commands: &mut Commands, state: &GameState) {
-    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
-    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+fn spawn_map(commands: &mut Commands, state: &GameState, images: &mut Assets<Image>) {
 
-    // Spawn play area background (a single large rectangle)
+    let width = GRID_WIDTH as u32 + 2;
+    let height = GRID_HEIGHT as u32 + 2;
+    let mut data = vec![0; (width * height * 4) as usize];
+
+    for y in 0..height {
+        for x in 0..width {
+            let grid_x = x as i32 - 1;
+            let grid_y = y as i32 - 1;
+            
+            let color = if grid_x < 0 || grid_x >= GRID_WIDTH || grid_y < 0 || grid_y >= GRID_HEIGHT {
+                [76, 76, 89, 255] // srgb(0.3, 0.3, 0.35) mapped to u8
+            } else {
+                let terrain = state.map.get_terrain(grid_x, grid_y);
+                match terrain {
+                    Terrain::Grass => [35, 81, 40, 255], // srgb(0.14, 0.32, 0.16)
+                    Terrain::Road => [127, 102, 76, 255], // srgb(0.5, 0.4, 0.3)
+                    Terrain::Water => [51, 127, 229, 255], // srgb(0.2, 0.5, 0.9)
+                    Terrain::Rock => [102, 102, 102, 255], // srgb(0.4, 0.4, 0.4)
+                }
+            };
+            
+            let idx = ((height - 1 - y) * width + x) as usize * 4;
+            data[idx] = color[0];
+            data[idx + 1] = color[1];
+            data[idx + 2] = color[2];
+            data[idx + 3] = color[3];
+        }
+    }
+
+    let image = Image::new(
+        Extent3d { width, height, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+
+    let image_handle = images.add(image);
+    
     commands.spawn((
         Sprite {
-            color: Color::srgb(0.14, 0.32, 0.16),
-            custom_size: Some(Vec2::new(GRID_WIDTH as f32 * TILE_SIZE, GRID_HEIGHT as f32 * TILE_SIZE)),
+            image: image_handle,
+            custom_size: Some(Vec2::new(width as f32 * TILE_SIZE, height as f32 * TILE_SIZE)),
             ..default()
         },
-        Transform::from_xyz(
-            (GRID_WIDTH as f32 * TILE_SIZE) / 2.0 - offset_x - TILE_SIZE / 2.0,
-            (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0 - offset_y - TILE_SIZE / 2.0,
-            -1.5, // behind all map elements
-        ),
+        Transform::from_xyz(-TILE_SIZE / 2.0, -TILE_SIZE / 2.0, -1.5),
         MapTile,
     ));
-
-    // Spawn border wall tiles
-    let border_color = Color::srgb(0.3, 0.3, 0.35);
-    for x in -1..=GRID_WIDTH {
-        for &y in &[-1, GRID_HEIGHT] {
-            commands.spawn((
-                Sprite {
-                    color: border_color,
-                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
-                    ..default()
-                },
-                Transform::from_xyz(
-                    x as f32 * TILE_SIZE - offset_x,
-                    y as f32 * TILE_SIZE - offset_y,
-                    -0.5,
-                ),
-                MapTile,
-            ));
-        }
-    }
-    for y in 0..GRID_HEIGHT {
-        for &x in &[-1, GRID_WIDTH] {
-            commands.spawn((
-                Sprite {
-                    color: border_color,
-                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
-                    ..default()
-                },
-                Transform::from_xyz(
-                    x as f32 * TILE_SIZE - offset_x,
-                    y as f32 * TILE_SIZE - offset_y,
-                    -0.5,
-                ),
-                MapTile,
-            ));
-        }
-    }
-
-    for y in 0..GRID_HEIGHT {
-        for x in 0..GRID_WIDTH {
-            let terrain = state.map.get_terrain(x, y);
-            if terrain == Terrain::Grass {
-                continue;
-            }
-            let color = match terrain {
-                Terrain::Grass => unreachable!(),
-                Terrain::Road => Color::srgb(0.5, 0.4, 0.3),
-                Terrain::Water => Color::srgb(0.2, 0.5, 0.9),
-                Terrain::Rock => Color::srgb(0.4, 0.4, 0.4),
-            };
-            commands.spawn((
-                Sprite {
-                    color,
-                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
-                    ..default()
-                },
-                Transform::from_xyz(
-                    x as f32 * TILE_SIZE - offset_x,
-                    y as f32 * TILE_SIZE - offset_y,
-                    -1.0,
-                ),
-                MapTile,
-            ));
-        }
-    }
 }
 
 fn main() {
@@ -237,20 +232,24 @@ fn main() {
     }
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Snake".into(),
-                resolution: (800, 800).into(),
-                // Vsync: present one frame per vertical blank for a smooth,
-                // tear-free 60fps on a 60Hz display.
-                present_mode: PresentMode::AutoVsync,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Snake".into(),
+                        resolution: (800, 800).into(),
+                        // Vsync: present one frame per vertical blank for a smooth,
+                        // tear-free 60fps on a 60Hz display.
+                        present_mode: PresentMode::AutoVsync,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(ImagePlugin::default_nearest()),
+        )
         .insert_resource(ClearColor(Color::srgb(0.09, 0.10, 0.14)))
         .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias)))
-        .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
+        .insert_resource(TickTimer(Timer::from_seconds(0.033, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
         .insert_resource(AppStatus::Running)
@@ -266,6 +265,7 @@ fn main() {
                 update_status_text,
                 render_sync,
                 apply_interpolation,
+                update_particles,
             )
                 .chain(),
         )
@@ -376,6 +376,7 @@ fn setup(
     mut commands: Commands,
     engine: Res<GameEngine>,
     mut status: ResMut<AppStatus>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     // Start zoomed out so a good chunk of the (now much larger) field is
     // framed on load; the field is centered on the origin so the default
@@ -388,7 +389,7 @@ fn setup(
         }),
     ));
 
-    spawn_map(&mut commands, &engine.0);
+    spawn_map(&mut commands, &engine.0, &mut images);
 
     let args: Vec<String> = std::env::args().collect();
     let is_ai = args.iter().any(|arg| arg == "--ai");
@@ -609,6 +610,7 @@ fn keyboard_input(
     map_query: Query<Entity, With<MapTile>>,
     mut status: ResMut<AppStatus>,
     ai_server: Option<Res<AiServerProcess>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Space) {
         // Restart the game — works whether it's still running, over, or the
@@ -622,7 +624,7 @@ fn keyboard_input(
         for entity in map_query.iter() {
             commands.entity(entity).despawn();
         }
-        spawn_map(&mut commands, &engine.0);
+        spawn_map(&mut commands, &engine.0, &mut images);
         dirty.0 = true;
 
         let args: Vec<String> = std::env::args().collect();
@@ -690,7 +692,37 @@ fn camera_control(
     }
 }
 
+fn spawn_particles_for_dead_preys(commands: &mut Commands, state: &GameState, prev: &PrevPositions) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for (p_idx, &died) in state.prey_died_this_tick.iter().enumerate() {
+        if died {
+            if let Some(pos) = prev.prey_pos.get(p_idx) {
+                let origin = Vec3::new(pos.0 * TILE_SIZE - offset_x, pos.1 * TILE_SIZE - offset_y, 1.0);
+                for _ in 0..15 {
+                    let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                    let speed = rand::random::<f32>() * 60.0 + 20.0;
+                    let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+                    commands.spawn((
+                        Sprite {
+                            color: Color::srgba(1.0, 0.0, 0.0, 0.8),
+                            custom_size: Some(Vec2::new(TILE_SIZE * 0.6, TILE_SIZE * 0.6)),
+                            ..default()
+                        },
+                        Transform::from_translation(origin),
+                        Particle {
+                            velocity,
+                            lifetime: Timer::from_seconds(0.5, TimerMode::Once),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+}
+
 fn game_tick(
+    mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<TickTimer>,
     mut engine: ResMut<GameEngine>,
@@ -751,6 +783,7 @@ fn game_tick(
                 prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
                 prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
                 engine.0.step(1.0, &prey_actions);
+                spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
                 // The engine no longer respawns eaten prey inside `step()`
                 // (the trainer captures their terminal observation first); the
                 // visualizer just respawns them immediately every tick.
@@ -769,6 +802,7 @@ fn game_tick(
         prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
         prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
         engine.0.step(1.0, &prey_actions);
+        spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
         engine.0.respawn_dead_preys();
     }
 
