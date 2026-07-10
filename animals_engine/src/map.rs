@@ -8,16 +8,7 @@ pub enum Terrain {
     Rock,
 }
 
-impl Terrain {
-    pub fn speed(&self) -> f32 {
-        match self {
-            Terrain::Grass => 0.8,
-            Terrain::Road => 1.0,
-            Terrain::Water => 0.2,
-            Terrain::Rock => 0.0,
-        }
-    }
-}
+
 
 #[derive(Clone, Debug)]
 pub struct Map {

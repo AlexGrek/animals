@@ -14,14 +14,17 @@ def main():
     parser = argparse.ArgumentParser(description="Headless Fast-Forward Test for Snake Simulation")
     parser.add_argument("--model", action="append", type=str, help="Path to SB3 model(s)")
     parser.add_argument("--prey-model", action="append", type=str, help="Path to prey SB3 model(s)")
+    parser.add_argument("--amphibia-model", action="append", type=str, help="Path to amphibia SB3 model(s)")
     parser.add_argument("--snakes", type=int, default=2, help="Number of snakes in the simulation")
     parser.add_argument("--preys", type=int, default=1, help="Number of preys in the simulation")
+    parser.add_argument("--amphibias", type=int, default=0, help="Number of amphibias in the simulation")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum number of steps before forced termination")
     parser.add_argument("--output", type=str, default="test_results.json", help="Path to dump JSON results")
     args, unknown = parser.parse_known_args()
 
     num_snakes = args.snakes
     num_preys = args.preys
+    num_amphibias = args.amphibias
 
     model_paths = args.model
     if not model_paths:
@@ -65,9 +68,31 @@ def main():
             prey_models.append(loaded_prey_models[path])
     else:
         prey_models = [None] * num_preys
+        
+    # Handle multiple amphibia models
+    amphibia_model_paths = args.amphibia_model
+    amphibia_models = []
+    if amphibia_model_paths:
+        if len(amphibia_model_paths) == 1:
+            amphibia_model_paths = amphibia_model_paths * num_amphibias
+        elif len(amphibia_model_paths) != num_amphibias:
+            logger.error(f"Number of amphibia models ({len(amphibia_model_paths)}) must be 1 or equal to number of amphibias ({num_amphibias}).")
+            sys.exit(1)
 
-    logger.info(f"Initializing simulation with {num_snakes} snakes and {num_preys} preys...")
-    sim = animals_simulation.Simulation(num_snakes, num_preys)
+        loaded_amphibia_models = {}
+        for path in amphibia_model_paths:
+            if path not in loaded_amphibia_models:
+                if not os.path.exists(path + ".zip") and not os.path.exists(path):
+                    logger.error(f"Amphibia model not found at {path}.")
+                    sys.exit(1)
+                logger.info(f"Loading amphibia model from {path}...")
+                loaded_amphibia_models[path] = PPO.load(path)
+            amphibia_models.append(loaded_amphibia_models[path])
+    else:
+        amphibia_models = [None] * num_amphibias
+
+    logger.info(f"Initializing simulation with {num_snakes} snakes, {num_preys} preys, and {num_amphibias} amphibias...")
+    sim = animals_simulation.Simulation(num_snakes, num_preys, num_amphibias)
     obs_list = sim.reset()
 
     total_apples = [0] * num_snakes
@@ -76,6 +101,9 @@ def main():
     
     prey_deaths = [0] * num_preys
     prey_ticks_survived = [0] * num_preys
+    
+    amphibia_deaths = [0] * num_amphibias
+    amphibia_ticks_survived = [0] * num_amphibias
 
     logger.info("Running simulation loop...")
     steps = 0
@@ -96,7 +124,17 @@ def main():
             else:
                 prey_actions.append(0)
 
-        obs_list, rewards, dones, _terminal_obs, _, prey_rewards, prey_dones = sim.step(actions, prey_actions)
+        amphibia_actions = []
+        amphibia_obs_list = sim.get_all_amphibia_observations()
+        for a_idx in range(num_amphibias):
+            if amphibia_models[a_idx] is not None:
+                a_obs = np.array(amphibia_obs_list[a_idx], dtype=np.float32).reshape(1, 64)
+                aa, _ = amphibia_models[a_idx].predict(a_obs, deterministic=True)
+                amphibia_actions.append(int(aa[0]))
+            else:
+                amphibia_actions.append(0)
+
+        obs_list, rewards, dones, _terminal_obs, _, prey_rewards, prey_dones, _, amphibia_rewards, amphibia_dones = sim.step(actions, prey_actions, amphibia_actions)
         steps += 1
 
         for p_idx in range(num_preys):
@@ -104,6 +142,12 @@ def main():
                 prey_deaths[p_idx] += 1
             else:
                 prey_ticks_survived[p_idx] += 1
+                
+        for a_idx in range(num_amphibias):
+            if amphibia_dones[a_idx]:
+                amphibia_deaths[a_idx] += 1
+            else:
+                amphibia_ticks_survived[a_idx] += 1
 
         for i in range(num_snakes):
             if dones[i]:
@@ -130,10 +174,19 @@ def main():
             "total_deaths": prey_deaths[p_idx],
             "ticks_survived": prey_ticks_survived[p_idx]
         })
+        
+    amphibia_stats = []
+    for a_idx in range(num_amphibias):
+        amphibia_stats.append({
+            "model": amphibia_model_paths[a_idx] if amphibia_model_paths else "static_amphibia",
+            "total_deaths": amphibia_deaths[a_idx],
+            "ticks_survived": amphibia_ticks_survived[a_idx]
+        })
 
     output_data = {
         "snakes": stats,
-        "prey": prey_stats
+        "prey": prey_stats,
+        "amphibia": amphibia_stats
     }
 
     with open(args.output, "w") as f:

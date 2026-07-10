@@ -6,21 +6,23 @@ pub struct Simulation {
     game_state: GameState,
     num_snakes: usize,
     num_preys: usize,
+    num_amphibias: usize,
 }
 
 #[pymethods]
 impl Simulation {
     #[new]
-    fn new(num_snakes: usize, num_preys: usize) -> Self {
+    fn new(num_snakes: usize, num_preys: usize, num_amphibias: usize) -> Self {
         Self {
-            game_state: GameState::new(100, 100, num_snakes, num_preys),
+            game_state: GameState::new(100, 100, num_snakes, num_preys, num_amphibias),
             num_snakes,
             num_preys,
+            num_amphibias,
         }
     }
 
     fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
-        self.game_state = GameState::new(100, 100, self.num_snakes, self.num_preys);
+        self.game_state = GameState::new(100, 100, self.num_snakes, self.num_preys, self.num_amphibias);
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
             obs.push(self.game_state.get_relative_observation(i).to_vec());
@@ -36,17 +38,29 @@ impl Simulation {
         Ok(obs)
     }
 
+    fn get_all_amphibia_observations(&self) -> PyResult<Vec<Vec<f32>>> {
+        let mut obs = Vec::new();
+        for i in self.num_preys..(self.num_preys + self.num_amphibias) {
+            obs.push(self.game_state.get_prey_observation(i).to_vec());
+        }
+        Ok(obs)
+    }
+
     /// Steps the simulation.
     /// Returns `(obs, rewards, dones, terminal_obs, prey_obs, prey_rewards, prey_dones)`
     fn step(
         &mut self,
         actions: Vec<usize>,
         prey_actions: Vec<usize>,
+        amphibia_actions: Vec<usize>,
     ) -> PyResult<(
         Vec<Vec<f32>>,
         Vec<f32>,
         Vec<bool>,
         Vec<Vec<f32>>,
+        Vec<Vec<f32>>,
+        Vec<f32>,
+        Vec<bool>,
         Vec<Vec<f32>>,
         Vec<f32>,
         Vec<bool>,
@@ -79,7 +93,9 @@ impl Simulation {
         let prev_kills: Vec<u32> = self.game_state.snakes.iter().map(|s| s.kills).collect();
         let prev_dists: Vec<f32> = self.game_state.snakes.iter().map(|s| get_min_dist(&self.game_state, s.head_pos)).collect();
 
-        self.game_state.step(1.0, &prey_actions);
+        let mut all_prey_actions = prey_actions;
+        all_prey_actions.extend(amphibia_actions);
+        self.game_state.step(1.0, &all_prey_actions);
 
         // Reward function for snakes
         let calc_reward = |snake: &animals_engine::SnakeState, prev_score: u32, prev_kills: u32, prev_dist: f32| -> f32 {
@@ -142,7 +158,19 @@ impl Simulation {
             prey_dones.push(prey_done);
         }
 
-        Ok((obs, rewards, dones, terminal_obs, prey_obs, prey_rewards, prey_dones))
+        let mut amphibia_obs = Vec::new();
+        let mut amphibia_rewards = Vec::new();
+        let mut amphibia_dones = Vec::new();
+
+        for i in self.num_preys..(self.num_preys + self.num_amphibias) {
+            let done = self.game_state.prey_died_this_tick[i];
+            let reward = if done { -10.0 } else { 0.1 };
+            amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
+            amphibia_rewards.push(reward);
+            amphibia_dones.push(done);
+        }
+
+        Ok((obs, rewards, dones, terminal_obs, prey_obs, prey_rewards, prey_dones, amphibia_obs, amphibia_rewards, amphibia_dones))
     }
 
     fn get_stats<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, pyo3::types::PyDict>>> {

@@ -1,42 +1,46 @@
-[
-    {
-        "length": 2,
-        "score": 1,
-        "kills": 0,
-        "is_dead": false,
-        "death_by_wall": false,
-        "death_by_self": false,
-        "death_by_opponent": false,
-        "model": "models/snake_model"
-    },
-    {
-        "length": 1,
-        "score": 0,
-        "kills": 0,
-        "is_dead": true,
-        "death_by_wall": false,
-        "death_by_self": false,
-        "death_by_opponent": true,
-        "model": "models/snake_model"
-    },
-    {
-        "length": 1,
-        "score": 0,
-        "kills": 0,
-        "is_dead": false,
-        "death_by_wall": false,
-        "death_by_self": false,
-        "death_by_opponent": false,
-        "model": "models/snake_model"
-    },
-    {
-        "length": 1,
-        "score": 0,
-        "kills": 0,
-        "is_dead": false,
-        "death_by_wall": false,
-        "death_by_self": false,
-        "death_by_opponent": false,
-        "model": "models/snake_model"
-    }
-]
+{
+    "snakes": [
+        {
+            "length": 1,
+            "score": 0,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "death_by_hunger": false,
+            "model": "models/snake_model",
+            "total_apples_eaten": 0,
+            "total_kills": 0,
+            "total_deaths": 1
+        },
+        {
+            "length": 1,
+            "score": 0,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "death_by_hunger": false,
+            "model": "models/snake_model",
+            "total_apples_eaten": 0,
+            "total_kills": 0,
+            "total_deaths": 1
+        }
+    ],
+    "prey": [
+        {
+            "model": "static_prey",
+            "total_deaths": 0,
+            "ticks_survived": 1000
+        }
+    ],
+    "amphibia": [
+        {
+            "model": "static_amphibia",
+            "total_deaths": 0,
+            "ticks_survived": 1000
+        }
+    ]
+}

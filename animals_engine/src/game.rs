@@ -1,12 +1,14 @@
 use rand::Rng;
 use crate::map::{Map, Terrain};
 use crate::snake::SnakeState;
+use crate::species::Species;
 use crate::direction::Direction;
 
 #[derive(Clone, Debug)]
 pub struct PreyState {
     pub pos: (f32, f32),
     pub is_dead: bool,
+    pub species: Species,
 }
 
 #[derive(Clone, Debug)]
@@ -21,24 +23,33 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(width: i32, height: i32, num_snakes: usize, num_preys: usize) -> Self {
+    pub fn new(width: i32, height: i32, num_snakes: usize, num_preys: usize, num_amphibias: usize) -> Self {
         let map = Map::new(width, height);
+
+        let mut preys = Vec::new();
+        for _ in 0..num_preys {
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: false, species: Species::Prey });
+        }
+        for _ in 0..num_amphibias {
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: false, species: Species::Amphibia });
+        }
+        let total_preys = num_preys + num_amphibias;
 
         let mut state = Self {
             snakes: vec![SnakeState::new((0, 0), Direction::Up); num_snakes],
-            preys: vec![PreyState { pos: (0.0, 0.0), is_dead: false }; num_preys],
+            preys,
             grid_width: width,
             grid_height: height,
             map,
             game_over: false,
-            prey_died_this_tick: vec![false; num_preys],
+            prey_died_this_tick: vec![false; total_preys],
         };
 
         for i in 0..num_snakes {
             let (pos, direction) = state.spawn_position(i);
             state.snakes[i] = SnakeState::new(pos, direction);
         }
-        for i in 0..num_preys {
+        for i in 0..total_preys {
             state.spawn_prey(i);
         }
         state
@@ -163,7 +174,8 @@ impl GameState {
                 let prev_pos = self.preys[i].pos;
                 let px_before = prev_pos.0.round() as i32;
                 let py_before = prev_pos.1.round() as i32;
-                let speed = self.map.get_terrain(px_before, py_before).speed();
+                let terrain = self.map.get_terrain(px_before, py_before);
+                let speed = self.preys[i].species.speed_on(terrain);
 
                 self.preys[i].pos.0 += dir_vec.0 as f32 * speed * dt;
                 self.preys[i].pos.1 += dir_vec.1 as f32 * speed * dt;
@@ -196,7 +208,8 @@ impl GameState {
             }
             
             let q_head_before = snake.body[0];
-            let speed = self.map.get_terrain(q_head_before.0, q_head_before.1).speed();
+            let terrain = self.map.get_terrain(q_head_before.0, q_head_before.1);
+            let speed = Species::Snake.speed_on(terrain);
             let dir_vec = snake.direction.to_vector();
             
             snake.head_pos.0 += dir_vec.0 as f32 * speed * dt;
@@ -384,7 +397,7 @@ impl GameState {
                     if is_enemy {
                         -0.5
                     } else {
-                        terrain.speed() * 0.5
+                        Species::Snake.speed_on(terrain) * 0.5
                     }
                 };
                 
@@ -446,7 +459,7 @@ impl GameState {
                     if has_snake {
                         -0.5
                     } else {
-                        terrain.speed() * 0.5
+                        prey.species.speed_on(terrain) * 0.5
                     }
                 };
                 obs[idx] = cell_val;

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 use animals_engine::{Direction, GameState, RelativeAction};
+use animals_engine::species::Species;
 use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -142,6 +143,15 @@ fn main() {
         }
     }
 
+    let mut num_amphibias = 0;
+    if let Some(idx) = args.iter().position(|arg| arg == "--amphibias") {
+        if idx + 1 < args.len() {
+            if let Ok(n) = args[idx + 1].parse::<usize>() {
+                num_amphibias = n;
+            }
+        }
+    }
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -155,7 +165,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.2, 0.6, 0.2)))
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys)))
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias)))
         .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
@@ -198,13 +208,13 @@ fn gather_observations(game: &GameState) -> Vec<f32> {
 /// Spawns the background thread that owns `stream` and services inference
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
-fn spawn_ai_worker(mut stream: TcpStream, num_preys: usize) -> AiWorkerHandle {
+fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize) -> AiWorkerHandle {
     let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<Vec<i32>>();
 
     std::thread::spawn(move || {
         while let Ok(obs) = obs_rx.recv() {
-            let num_snakes = (obs.len() - num_preys * 64) / 66;
+            let num_snakes = (obs.len() - total_preys * 64) / 66;
 
             let mut payload = vec![0u8; obs.len() * 4];
             for (i, &val) in obs.iter().enumerate() {
@@ -214,13 +224,13 @@ fn spawn_ai_worker(mut stream: TcpStream, num_preys: usize) -> AiWorkerHandle {
                 break;
             }
 
-            let mut action_bytes = vec![0u8; (num_snakes + num_preys) * 4];
+            let mut action_bytes = vec![0u8; (num_snakes + total_preys) * 4];
             if stream.read_exact(&mut action_bytes).is_err() {
                 break;
             }
 
-            let mut actions = Vec::with_capacity(num_snakes + num_preys);
-            for s in 0..(num_snakes + num_preys) {
+            let mut actions = Vec::with_capacity(num_snakes + total_preys);
+            for s in 0..(num_snakes + total_preys) {
                 let off = s * 4;
                 actions.push(i32::from_le_bytes(action_bytes[off..off + 4].try_into().unwrap()));
             }
@@ -345,7 +355,9 @@ fn spawn_ai_server(
 ) {
     let mut model_paths = Vec::new();
     let mut prey_model_paths = Vec::new();
+    let mut amphibia_model_paths = Vec::new();
     let mut num_preys = 1;
+    let mut num_amphibias = 0;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--model" && i + 1 < args.len() {
@@ -354,9 +366,17 @@ fn spawn_ai_server(
         } else if args[i] == "--prey-model" && i + 1 < args.len() {
             prey_model_paths.push(args[i + 1].clone());
             i += 1;
+        } else if args[i] == "--amphibia-model" && i + 1 < args.len() {
+            amphibia_model_paths.push(args[i + 1].clone());
+            i += 1;
         } else if args[i] == "--preys" && i + 1 < args.len() {
             if let Ok(n) = args[i + 1].parse::<usize>() {
                 num_preys = n;
+            }
+            i += 1;
+        } else if args[i] == "--amphibias" && i + 1 < args.len() {
+            if let Ok(n) = args[i + 1].parse::<usize>() {
+                num_amphibias = n;
             }
             i += 1;
         }
@@ -367,13 +387,13 @@ fn spawn_ai_server(
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    println!("Spawning AI inference server on port {} with {} snakes and {} preys...", port, num_snakes, num_preys);
+    println!("Spawning AI inference server on port {} with {} snakes, {} preys, and {} amphibias...", port, num_snakes, num_preys, num_amphibias);
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let learner_dir = format!("{}/../learner", manifest_dir);
 
     let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string(), "--preys", &num_preys.to_string()])
+    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string(), "--preys", &num_preys.to_string(), "--amphibias", &num_amphibias.to_string()])
        .current_dir(learner_dir)
        .env("PYTHONPATH", "src");
 
@@ -385,6 +405,11 @@ fn spawn_ai_server(
     for pm in prey_model_paths {
         cmd.arg("--prey-model");
         cmd.arg(pm);
+    }
+    
+    for am in amphibia_model_paths {
+        cmd.arg("--amphibia-model");
+        cmd.arg(am);
     }
 
     cmd.stderr(std::process::Stdio::piped());
@@ -520,8 +545,9 @@ fn keyboard_input(
         // Restart the game — works whether it's still running, over, or the
         // AI server failed.
         let num_snakes = engine.0.snakes.len();
-        let num_preys = engine.0.preys.len();
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys);
+        let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
+        let num_preys = engine.0.preys.len() - num_amphibias;
+        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias);
 
         // Despawn old map and spawn new map
         for entity in map_query.iter() {
@@ -695,9 +721,13 @@ fn render_sync(
     for prey in &engine.0.preys {
         if !prey.is_dead {
             let prey_pos = prey.pos;
+            let color = match prey.species {
+                Species::Amphibia => Color::srgb(0.0, 1.0, 1.0), // Cyan for Amphibia
+                _ => Color::srgb(1.0, 0.5, 0.0), // Orange for Prey
+            };
             commands.spawn((
                 Sprite {
-                    color: Color::srgb(1.0, 0.5, 0.0), // Draw prey as orange
+                    color,
                     custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
                     ..default()
                 },

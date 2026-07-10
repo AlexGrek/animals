@@ -89,7 +89,7 @@ class RustMultiSnakeVecEnv(VecEnv):
                     raise FileNotFoundError(f"Prey model not found at {prey_model_path}")
         self.prey_model = PPO.load(prey_model_path)
 
-        self.games = [animals_simulation.Simulation(self.snakes_per_game, 2) for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(self.snakes_per_game, 2, 0) for _ in range(num_games)]
         
         # Global Buffers for ALL snakes
         self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
@@ -143,7 +143,7 @@ class RustMultiSnakeVecEnv(VecEnv):
                 pa, _ = self.prey_model.predict(np.array(p_obs, dtype=np.float32).reshape(1, 64), deterministic=False)
                 prey_actions.append(int(pa[0]))
 
-            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _ = game.step(actions_list, prey_actions)
+            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _, _, _, _ = game.step(actions_list, prey_actions, [])
 
             for s in range(self.snakes_per_game):
                 idx = start_idx + s
