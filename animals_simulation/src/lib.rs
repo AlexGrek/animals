@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use animals_engine::snake::{GameState, RelativeAction};
+use animals_engine::{GameState, RelativeAction};
 
 #[pyclass]
 pub struct Simulation {
@@ -55,7 +55,7 @@ impl Simulation {
         self.game_state.step(1.0);
 
         // Reward function
-        let calc_reward = |snake: &animals_engine::snake::SnakeState, prev_score: u32, prev_kills: u32| -> f32 {
+        let calc_reward = |snake: &animals_engine::SnakeState, prev_score: u32, prev_kills: u32| -> f32 {
             if snake.is_dead {
                 -10.0 // Wall, Self, Opponent, or Head-to-head
             } else if snake.kills > prev_kills {

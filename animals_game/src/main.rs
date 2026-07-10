@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::window::PresentMode;
-use animals_engine::snake::{Direction, GameState, RelativeAction};
+use animals_engine::{Direction, GameState, RelativeAction};
 use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -35,11 +35,16 @@ struct AiWorker(Option<AiWorkerHandle>);
 struct RenderDirty(bool);
 
 #[derive(Resource)]
-struct AiServerProcess(std::sync::Mutex<std::process::Child>);
+struct AiServerProcess {
+    child: std::sync::Mutex<std::process::Child>,
+    /// Lines read from the child's stderr by a background thread, so we can
+    /// surface its last error message if it exits before connecting.
+    stderr_rx: Receiver<String>,
+}
 
 impl Drop for AiServerProcess {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.0.lock() {
+        if let Ok(mut child) = self.child.lock() {
             println!("Shutting down Python AI server...");
             let _ = child.kill();
             let _ = child.wait();
@@ -68,6 +73,8 @@ struct PendingConnection {
     retry: Timer,
     elapsed: f32,
     timeout: f32,
+    /// Stderr lines collected from the Python process so far, newest last.
+    stderr_lines: Vec<String>,
 }
 
 /// The on-screen line that reflects [`AppStatus`] (loading / error messages).
@@ -310,49 +317,80 @@ fn setup(
         });
 
     if is_ai {
-        let mut model_paths = Vec::new();
-        let mut i = 0;
-        while i < args.len() {
-            if args[i] == "--model" && i + 1 < args.len() {
-                model_paths.push(args[i + 1].clone());
-                i += 1;
-            }
+        spawn_ai_server(&mut commands, &args, num_snakes, &mut status);
+    }
+}
+
+/// Spawns the Python inference server as a child process and wires up the
+/// resources `poll_ai_connection` uses to connect to it and (if it dies
+/// early) surface its error. Used both at startup and to restart a crashed
+/// AI match when the player presses Space.
+fn spawn_ai_server(
+    commands: &mut Commands,
+    args: &[String],
+    num_snakes: usize,
+    status: &mut AppStatus,
+) {
+    let mut model_paths = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--model" && i + 1 < args.len() {
+            model_paths.push(args[i + 1].clone());
             i += 1;
         }
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        println!("Spawning AI inference server on port {} with {} snakes...", port, num_snakes);
-
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let learner_dir = format!("{}/../learner", manifest_dir);
-
-        let mut cmd = std::process::Command::new("uv");
-        cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string()])
-           .current_dir(learner_dir)
-           .env("PYTHONPATH", "src");
-
-        for m in model_paths {
-            cmd.arg("--model");
-            cmd.arg(m);
-        }
-
-        let child = cmd.spawn().expect("Failed to spawn Python AI server");
-        commands.insert_resource(AiServerProcess(std::sync::Mutex::new(child)));
-
-        // Connect asynchronously across frames (see `poll_ai_connection`) so the
-        // window keeps rendering the loading text instead of freezing while the
-        // Python server imports torch and loads its models.
-        commands.insert_resource(PendingConnection {
-            port,
-            retry: Timer::from_seconds(0.2, TimerMode::Repeating),
-            elapsed: 0.0,
-            timeout: 60.0,
-        });
-        *status = AppStatus::Loading("Starting AI inference server…".to_string());
+        i += 1;
     }
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    println!("Spawning AI inference server on port {} with {} snakes...", port, num_snakes);
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let learner_dir = format!("{}/../learner", manifest_dir);
+
+    let mut cmd = std::process::Command::new("uv");
+    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string()])
+       .current_dir(learner_dir)
+       .env("PYTHONPATH", "src");
+
+    for m in model_paths {
+        cmd.arg("--model");
+        cmd.arg(m);
+    }
+
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().expect("Failed to spawn Python AI server");
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let (stderr_tx, stderr_rx) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            eprintln!("{line}");
+            if stderr_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    commands.insert_resource(AiServerProcess {
+        child: std::sync::Mutex::new(child),
+        stderr_rx,
+    });
+
+    // Connect asynchronously across frames (see `poll_ai_connection`) so the
+    // window keeps rendering the loading text instead of freezing while the
+    // Python server imports torch and loads its models.
+    commands.insert_resource(PendingConnection {
+        port,
+        retry: Timer::from_seconds(0.2, TimerMode::Repeating),
+        elapsed: 0.0,
+        timeout: 60.0,
+        stderr_lines: Vec::new(),
+    });
+    *status = AppStatus::Loading("Starting AI inference server…".to_string());
 }
 
 /// While a [`PendingConnection`] exists, retry connecting to the Python server
@@ -361,11 +399,30 @@ fn setup(
 fn poll_ai_connection(
     time: Res<Time>,
     pending: Option<ResMut<PendingConnection>>,
+    ai_server: Option<Res<AiServerProcess>>,
     mut ai_worker: ResMut<AiWorker>,
     mut status: ResMut<AppStatus>,
     mut commands: Commands,
 ) {
     let Some(mut pending) = pending else { return };
+
+    if let Some(ai_server) = &ai_server {
+        while let Ok(line) = ai_server.stderr_rx.try_recv() {
+            pending.stderr_lines.push(line);
+        }
+
+        let exited = ai_server.child.lock().ok().and_then(|mut c| c.try_wait().ok().flatten());
+        if let Some(exit_status) = exited {
+            let detail = pending
+                .stderr_lines
+                .last()
+                .cloned()
+                .unwrap_or_else(|| format!("exited with {exit_status}"));
+            *status = AppStatus::Failed(format!("AI inference server exited: {detail}"));
+            commands.remove_resource::<PendingConnection>();
+            return;
+        }
+    }
 
     pending.elapsed += time.delta_secs();
     if !pending.retry.tick(time.delta()).just_finished() {
@@ -402,6 +459,8 @@ fn keyboard_input(
     mut dirty: ResMut<RenderDirty>,
     mut commands: Commands,
     map_query: Query<Entity, With<MapTile>>,
+    mut status: ResMut<AppStatus>,
+    ai_server: Option<Res<AiServerProcess>>,
 ) {
     // Only handles first 2 snakes manually for testing
     if engine.0.snakes.len() > 0 {
@@ -428,17 +487,36 @@ fn keyboard_input(
         }
     }
 
-    if keyboard_input.just_pressed(KeyCode::Space) && engine.0.game_over {
-        // Restart the game
+    if keyboard_input.just_pressed(KeyCode::Space) {
+        // Restart the game — works whether it's still running, over, or the
+        // AI server failed.
         let num_snakes = engine.0.snakes.len();
         engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes);
-        
+
         // Despawn old map and spawn new map
         for entity in map_query.iter() {
             commands.entity(entity).despawn();
         }
         spawn_map(&mut commands, &engine.0);
         dirty.0 = true;
+
+        let args: Vec<String> = std::env::args().collect();
+        let is_ai = args.iter().any(|arg| arg == "--ai");
+        let needs_ai_respawn =
+            is_ai && (ai_server.is_none() || matches!(*status, AppStatus::Failed(_)));
+
+        if needs_ai_respawn {
+            // Drop any previous AI server (kills it via `Drop`) and spawn a
+            // fresh one so a crashed match can be retried without relaunching
+            // the whole game.
+            commands.remove_resource::<AiServerProcess>();
+            commands.remove_resource::<PendingConnection>();
+            spawn_ai_server(&mut commands, &args, num_snakes, &mut status);
+        } else if !is_ai {
+            *status = AppStatus::Running;
+        }
+        // Else: AI server already connected and healthy — leave it running,
+        // it'll pick up the freshly reset game state on the next tick.
     }
 }
 
