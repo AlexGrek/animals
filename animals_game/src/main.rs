@@ -274,9 +274,8 @@ fn main() {
 
 /// Colour used for a snake's head and its header line, so the two are visually
 /// linked. Matches the hue formula used when drawing bodies in `render_sync`.
-fn snake_color(idx: usize, total: usize) -> Color {
-    let hue = (idx as f32 / total.max(1) as f32) * 360.0;
-    Color::hsl(hue, 1.0, 0.5)
+fn snake_color(_idx: usize, _total: usize) -> Color {
+    Color::srgb(1.0, 0.6, 0.0) // Orange
 }
 
 /// Flattens every snake observation followed by every prey observation into one
@@ -883,8 +882,8 @@ fn render_sync(
         if !prey.is_dead {
             let prey_pos = prey.pos;
             let color = match prey.species {
-                Species::Amphibia => Color::srgb(0.0, 1.0, 1.0), // Cyan for Amphibia
-                _ => Color::srgb(1.0, 0.5, 0.0), // Orange for Prey
+                Species::Amphibia => Color::srgb(0.0, 0.6, 0.6), // Teal for Amphibia
+                _ => Color::srgb(0.5, 0.9, 0.5), // Light Green for Prey
             };
             let to = Vec3::new(
                 prey_pos.0 * TILE_SIZE - offset_x,
@@ -916,19 +915,16 @@ fn render_sync(
     }
 
     // 3. Draw Snake Bodies
-    let num_snakes = engine.0.snakes.len();
     for (s_idx, snake) in engine.0.snakes.iter().enumerate() {
         for (i, pos) in snake.body.iter().enumerate() {
             let color = if snake.is_dead {
                 Color::srgb(0.5, 0.5, 0.5) // Gray when dead
             } else if i == 0 {
-                // Determine head color based on snake index
-                let hue = (s_idx as f32 / num_snakes as f32) * 360.0;
-                Color::hsl(hue, 1.0, 0.5)
+                // Orange head
+                Color::srgb(1.0, 0.6, 0.0)
             } else {
-                // Determine body color based on snake index
-                let hue = (s_idx as f32 / num_snakes as f32) * 360.0;
-                Color::hsl(hue, 1.0, 0.3)
+                // Darker orange body
+                Color::srgb(0.8, 0.4, 0.0)
             };
 
             let to = Vec3::new(
