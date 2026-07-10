@@ -625,12 +625,7 @@ fn game_tick(
     // game). For the visualizer/manual-play we still want a clear "game over,
     // press Space to restart" moment, so detect any death here and freeze.
     let alive_count = engine.0.snakes.iter().filter(|s| !s.is_dead).count();
-    let num_snakes = engine.0.snakes.len();
-    let is_over = if num_snakes > 1 {
-        alive_count <= 1
-    } else {
-        alive_count == 0
-    };
+    let is_over = alive_count == 0;
     if is_over {
         engine.0.game_over = true;
     }
@@ -720,7 +715,7 @@ fn render_sync(
     let num_snakes = engine.0.snakes.len();
     for (s_idx, snake) in engine.0.snakes.iter().enumerate() {
         for (i, pos) in snake.body.iter().enumerate() {
-            let color = if engine.0.game_over {
+            let color = if snake.is_dead {
                 Color::srgb(0.5, 0.5, 0.5) // Gray when dead
             } else if i == 0 {
                 // Determine head color based on snake index

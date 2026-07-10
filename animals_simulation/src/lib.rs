@@ -96,7 +96,7 @@ impl Simulation {
             } else {
                 let current_dist = get_min_dist(&self.game_state, snake.head_pos);
                 let dist_reward = (prev_dist - current_dist) * 0.15;
-                let hunger_penalty = -0.01 * (snake.steps_since_last_eat as f32 / 50.0);
+                let hunger_penalty = -0.01 * (snake.steps_since_last_eat as f32 / 150.0);
                 hunger_penalty + dist_reward
             }
         };

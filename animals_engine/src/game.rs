@@ -139,7 +139,7 @@ impl GameState {
         for i in 0..self.snakes.len() {
             if !self.snakes[i].is_dead {
                 self.snakes[i].steps_since_last_eat += 1;
-                if self.snakes[i].steps_since_last_eat >= 200 {
+                if self.snakes[i].steps_since_last_eat >= 600 {
                     self.snakes[i].is_dead = true;
                     self.snakes[i].death_by_hunger = true;
                 }
@@ -275,7 +275,9 @@ impl GameState {
             for p_idx in 0..self.preys.len() {
                 if !self.preys[p_idx].is_dead {
                     let prey_grid_pos = (self.preys[p_idx].pos.0.round() as i32, self.preys[p_idx].pos.1.round() as i32);
-                    if head == prey_grid_pos {
+                    let dx = (head.0 - prey_grid_pos.0).abs();
+                    let dy = (head.1 - prey_grid_pos.1).abs();
+                    if dx <= 1 && dy <= 1 {
                         self.snakes[i].score += 1;
                         self.snakes[i].steps_since_last_eat = 0;
                         self.preys[p_idx].is_dead = true;
