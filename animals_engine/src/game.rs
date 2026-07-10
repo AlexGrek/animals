@@ -178,7 +178,7 @@ impl GameState {
                 let px_after = self.preys[i].pos.0.round() as i32;
                 let py_after = self.preys[i].pos.1.round() as i32;
                 let terrain_after = self.map.get_terrain(px_after, py_after);
-                if terrain_after == Terrain::Rock || terrain_after == Terrain::Water {
+                if terrain_after == Terrain::Rock {
                     self.preys[i].pos = prev_pos;
                 }
             }
