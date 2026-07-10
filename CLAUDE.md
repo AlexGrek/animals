@@ -1,6 +1,6 @@
-# GEMINI.md
+# CLAUDE.md
 
-This file provides guidance to Gemini CLI when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project
 
@@ -36,9 +36,9 @@ Toolchain: Rust 1.85+ (edition 2024), Python 3.14+, `uv` for Python deps (venv l
 
 Three Rust crates (cargo workspace) + one Python package:
 
-- **`animals_engine`** — headless game logic. `GameState` holds N `SnakeState`s; `get_relative_observation(snake_index)` produces the per-snake observation. Snakes run independent per-snake episodes: on death a snake is respawned in place via `respawn_dead()` rather than ending the whole game, so one snake's mistake never truncates the others. No I/O, no globals — instances are fully independent.
-- **`animals_simulation`** — PyO3 `cdylib` wrapping `GameState` as a Python `Simulation` class (`new(num_snakes)`, `reset() -> obs per snake`, `step(actions: list) -> (obs, rewards, dones, terminal_obs)`, `get_stats()`). `dones[i]` is true on the tick snake i died; `obs[i]` is that snake's post-respawn observation and `terminal_obs[i]` its pre-respawn (true terminal) observation on death ticks. The reward function lives here (`step`), not in the engine.
-- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick: `num_snakes * 66` f32 observations out, `num_snakes` i32 actions back. The engine no longer sets `game_over` itself, so `game_tick` sets it when it sees a dead snake to preserve the manual "freeze, press Space to restart" UX.
+- **`animals_engine`** — headless game logic. `GameState` holds N `SnakeState`s; `get_relative_observation(snake_index)` produces the per-snake observation. No I/O, no globals — instances are fully independent.
+- **`animals_simulation`** — PyO3 `cdylib` wrapping `GameState` as a Python `Simulation` class (`new(num_snakes)`, `reset() -> obs per snake`, `step(actions: list) -> (obs, rewards, dones)`, `get_stats()`). The reward function lives here (`step`), not in the engine.
+- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick: `num_snakes * 66` f32 observations out, `num_snakes` i32 actions back.
 - **`learner`** (Python, in `learner/src/learner/`) — `environment.py` defines `RustMultiSnakeVecEnv`, a custom SB3 `VecEnv` that presents only the training snakes to PPO while internally computing actions for frozen "existing" opponent models ("shared brain" self-play trick — see `docs/learning.md`), and `MultiProcRustVecEnv`, a pipe-based multiprocess wrapper around it. `main.py` trains, `play.py` is the TCP inference server for Bevy, `test.py` runs headless evals.
 
 ### Cross-language invariants

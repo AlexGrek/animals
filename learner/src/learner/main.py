@@ -16,7 +16,8 @@ from stable_baselines3 import PPO
 def main():
     parser = argparse.ArgumentParser(description="Reinforcement learning agent for animal behavior simulation.")
     parser.add_argument("--steps", type=int, default=100_000, help="Total timesteps to train.")
-    parser.add_argument("--num-games", type=int, default=8, help="Number of parallel games (each game has 2 snakes).")
+    parser.add_argument("--num-games", type=int, default=8, help="Number of parallel games.")
+    parser.add_argument("--snakes-per-game", type=int, default=2, help="Number of snakes per game instance.")
     parser.add_argument("--num-procs", type=int, default=1, help="Number of background processes to spawn for environment stepping.")
     parser.add_argument("--model-path", type=str, default="models/snake_model.zip", help="Path to save the model.")
     parser.add_argument("--existing", action="append", type=str, help="Existing model config in format path:count, e.g. models/v1.zip:4")
@@ -47,7 +48,7 @@ def main():
                 total_existing_counts[path] = total_existing_counts.get(path, 0) + count
                 total_existing_snakes += count
                 
-        total_snakes = args.num_games * 2
+        total_snakes = args.num_games * args.snakes_per_game
         training_count = total_snakes - total_existing_snakes
         
         if training_count < 1:
@@ -68,11 +69,12 @@ def main():
         def make_env_fn(proc_idx):
             def _init():
                 ex_models = existing_models_per_proc[proc_idx]
-                snakes_in_proc = games_per_proc * 2
+                snakes_in_proc = games_per_proc * args.snakes_per_game
                 ex_count = sum(ex_models.values())
                 tr_count = snakes_in_proc - ex_count
                 return RustMultiSnakeVecEnv(
                     num_games=games_per_proc,
+                    snakes_per_game=args.snakes_per_game,
                     training_count=tr_count,
                     existing_models=ex_models
                 )
@@ -87,7 +89,21 @@ def main():
         logger.info("Initializing PPO agent with device='cpu'...")
         # The policy is a tiny MLP; GPU host<->device transfer/launch overhead
         # exceeds the compute it would save, so CPU is faster here.
-        model = PPO("MlpPolicy", env, policy_kwargs=dict(net_arch=[256, 256, 256]), verbose=1, device="cpu")
+        # batch_size/n_steps tuned for CPU throughput: SB3 defaults (batch_size=64,
+        # n_steps=2048) create 512 minibatches * 10 epochs = 5120 tiny optimizer
+        # steps per update, which dominates wall-clock on CPU. Larger batches cut
+        # that overhead drastically (measured ~4.5x speedup); smaller n_steps gives
+        # more frequent policy updates for the same total sample count.
+        model = PPO(
+            "MlpPolicy",
+            env,
+            policy_kwargs=dict(net_arch=[256, 256, 256]),
+            verbose=1,
+            device="cpu",
+            batch_size=4096,
+            n_steps=512,
+            ent_coef=0.01,
+        )
         
         logger.info(f"Starting training for {args.steps} steps...")
         model.learn(total_timesteps=args.steps, progress_bar=True)

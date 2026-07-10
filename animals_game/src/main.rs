@@ -35,6 +35,16 @@ struct SnakeSegment;
 struct Apple;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mut num_snakes = 2;
+    if let Some(idx) = args.iter().position(|arg| arg == "--snakes") {
+        if idx + 1 < args.len() {
+            if let Ok(n) = args[idx + 1].parse::<usize>() {
+                num_snakes = n;
+            }
+        }
+    }
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -44,7 +54,7 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT)))
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes)))
         .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(AiConnection(None))
         .add_systems(Startup, setup)
@@ -52,33 +62,43 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>) {
+fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>, engine: Res<GameEngine>) {
     commands.spawn(Camera2d);
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--ai") {
-        let mut model_path = "models/snake_model".to_string();
-        if let Some(idx) = args.iter().position(|arg| arg == "--model") {
-            if idx + 1 < args.len() {
-                model_path = args[idx + 1].clone();
+        let mut model_paths = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--model" && i + 1 < args.len() {
+                model_paths.push(args[i + 1].clone());
+                i += 1;
             }
+            i += 1;
         }
+        
+        let num_snakes = engine.0.snakes.len();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        println!("Spawning AI inference server on port {} with model {}...", port, model_path);
+        println!("Spawning AI inference server on port {} with {} snakes...", port, num_snakes);
         
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let learner_dir = format!("{}/../learner", manifest_dir);
 
-        let child = std::process::Command::new("uv")
-            .args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--model", &model_path])
-            .current_dir(learner_dir)
-            .env("PYTHONPATH", "src")
-            .spawn()
-            .expect("Failed to spawn Python AI server");
+        let mut cmd = std::process::Command::new("uv");
+        cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string()])
+           .current_dir(learner_dir)
+           .env("PYTHONPATH", "src");
+
+        for m in model_paths {
+            cmd.arg("--model");
+            cmd.arg(m);
+        }
+
+        let child = cmd.spawn().expect("Failed to spawn Python AI server");
 
         commands.insert_resource(AiServerProcess(std::sync::Mutex::new(child)));
 
@@ -104,29 +124,35 @@ fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>) {
 }
 
 fn keyboard_input(keyboard_input: Res<ButtonInput<KeyCode>>, mut engine: ResMut<GameEngine>) {
-    if keyboard_input.just_pressed(KeyCode::ArrowUp) {
-        engine.0.set_direction(0, Direction::Up);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowDown) {
-        engine.0.set_direction(0, Direction::Down);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
-        engine.0.set_direction(0, Direction::Left);
-    } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
-        engine.0.set_direction(0, Direction::Right);
-    } 
+    // Only handles first 2 snakes manually for testing
+    if engine.0.snakes.len() > 0 {
+        if keyboard_input.just_pressed(KeyCode::ArrowUp) {
+            engine.0.set_direction(0, Direction::Up);
+        } else if keyboard_input.just_pressed(KeyCode::ArrowDown) {
+            engine.0.set_direction(0, Direction::Down);
+        } else if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
+            engine.0.set_direction(0, Direction::Left);
+        } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
+            engine.0.set_direction(0, Direction::Right);
+        } 
+    }
 
-    if keyboard_input.just_pressed(KeyCode::KeyW) {
-        engine.0.set_direction(1, Direction::Up);
-    } else if keyboard_input.just_pressed(KeyCode::KeyS) {
-        engine.0.set_direction(1, Direction::Down);
-    } else if keyboard_input.just_pressed(KeyCode::KeyA) {
-        engine.0.set_direction(1, Direction::Left);
-    } else if keyboard_input.just_pressed(KeyCode::KeyD) {
-        engine.0.set_direction(1, Direction::Right);
+    if engine.0.snakes.len() > 1 {
+        if keyboard_input.just_pressed(KeyCode::KeyW) {
+            engine.0.set_direction(1, Direction::Up);
+        } else if keyboard_input.just_pressed(KeyCode::KeyS) {
+            engine.0.set_direction(1, Direction::Down);
+        } else if keyboard_input.just_pressed(KeyCode::KeyA) {
+            engine.0.set_direction(1, Direction::Left);
+        } else if keyboard_input.just_pressed(KeyCode::KeyD) {
+            engine.0.set_direction(1, Direction::Right);
+        }
     }
 
     if keyboard_input.just_pressed(KeyCode::Space) && engine.0.game_over {
         // Restart the game
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT);
+        let num_snakes = engine.0.snakes.len();
+        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes);
     }
 }
 
@@ -137,15 +163,16 @@ fn game_tick(time: Res<Time>, mut timer: ResMut<TickTimer>, mut engine: ResMut<G
         }
 
         if let Some(stream) = &mut ai_conn.0 {
-            // 1. Get Observation
-            let obs0 = engine.0.get_relative_observation(0);
-            let obs1 = engine.0.get_relative_observation(1);
-            let mut byte_payload = [0u8; 528];
-            for (i, &val) in obs0.iter().enumerate() {
-                byte_payload[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
-            }
-            for (i, &val) in obs1.iter().enumerate() {
-                byte_payload[(i + 66) * 4..(i + 67) * 4].copy_from_slice(&val.to_le_bytes());
+            let num_snakes = engine.0.snakes.len();
+            let mut byte_payload = vec![0u8; num_snakes * 66 * 4];
+            
+            // 1. Get Observations
+            for s in 0..num_snakes {
+                let obs = engine.0.get_relative_observation(s);
+                for (i, &val) in obs.iter().enumerate() {
+                    let offset = (s * 66 + i) * 4;
+                    byte_payload[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                }
             }
 
             // 2. Send to Python
@@ -154,26 +181,32 @@ fn game_tick(time: Res<Time>, mut timer: ResMut<TickTimer>, mut engine: ResMut<G
                 std::process::exit(1);
             }
 
-            // 3. Read Action
-            let mut action_bytes = [0u8; 8];
+            // 3. Read Actions
+            let mut action_bytes = vec![0u8; num_snakes * 4];
             if stream.read_exact(&mut action_bytes).is_err() {
                 eprintln!("Lost connection to AI server");
                 std::process::exit(1);
             }
 
-            let action0_int = i32::from_le_bytes(action_bytes[0..4].try_into().unwrap());
-            let action1_int = i32::from_le_bytes(action_bytes[4..8].try_into().unwrap());
-
-            let relative_action0 = RelativeAction::from_usize(action0_int as usize);
-            let new_dir0 = relative_action0.to_absolute_direction(engine.0.snakes[0].direction);
-            engine.0.set_direction(0, new_dir0);
-
-            let relative_action1 = RelativeAction::from_usize(action1_int as usize);
-            let new_dir1 = relative_action1.to_absolute_direction(engine.0.snakes[1].direction);
-            engine.0.set_direction(1, new_dir1);
+            for s in 0..num_snakes {
+                let offset = s * 4;
+                let action_int = i32::from_le_bytes(action_bytes[offset..offset + 4].try_into().unwrap());
+                let relative_action = RelativeAction::from_usize(action_int as usize);
+                let new_dir = relative_action.to_absolute_direction(engine.0.snakes[s].direction);
+                engine.0.set_direction(s, new_dir);
+            }
         }
 
         engine.0.step();
+
+        // The engine no longer ends the game itself on death (it respawns
+        // dead snakes in place so training episodes aren't truncated across
+        // the whole game). For the visualizer/manual-play we still want a
+        // clear "game over, press Space to restart" moment, so detect any
+        // death here and freeze the game ourselves.
+        if engine.0.snakes.iter().any(|s| s.is_dead) {
+            engine.0.game_over = true;
+        }
     }
 }
 
@@ -211,14 +244,19 @@ fn render_sync(
     ));
 
     // 3. Draw Snake Bodies
+    let num_snakes = engine.0.snakes.len();
     for (s_idx, snake) in engine.0.snakes.iter().enumerate() {
         for (i, pos) in snake.body.iter().enumerate() {
             let color = if engine.0.game_over {
                 Color::srgb(0.5, 0.5, 0.5) // Gray when dead
             } else if i == 0 {
-                if s_idx == 0 { Color::srgb(0.0, 0.8, 0.0) } else { Color::srgb(0.0, 0.0, 0.8) } // Head
+                // Determine head color based on snake index
+                let hue = (s_idx as f32 / num_snakes as f32) * 360.0;
+                Color::hsl(hue, 1.0, 0.5)
             } else {
-                if s_idx == 0 { Color::srgb(0.0, 0.5, 0.0) } else { Color::srgb(0.0, 0.0, 0.5) } // Body
+                // Determine body color based on snake index
+                let hue = (s_idx as f32 / num_snakes as f32) * 360.0;
+                Color::hsl(hue, 1.0, 0.3)
             };
 
             commands.spawn((

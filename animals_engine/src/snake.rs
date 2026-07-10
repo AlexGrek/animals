@@ -108,19 +108,89 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(width: i32, height: i32) -> Self {
+    pub fn new(width: i32, height: i32, num_snakes: usize) -> Self {
+        let mut snakes = Vec::new();
+
         let mut state = Self {
-            snakes: vec![
-                SnakeState::new((10, height / 2), Direction::Right),
-                SnakeState::new((width - 10, height / 2), Direction::Left),
-            ],
+            snakes: Vec::new(),
             apple_pos: (0, 0),
             grid_width: width,
             grid_height: height,
             game_over: false,
         };
+
+        for i in 0..num_snakes {
+            let (pos, direction) = state.initial_spawn(i, num_snakes);
+            snakes.push(SnakeState::new(pos, direction));
+        }
+        state.snakes = snakes;
         state.spawn_apple();
         state
+    }
+
+    /// The deterministic "evenly spaced columns, mid-height" layout used both
+    /// for the initial game setup and as the preferred respawn location.
+    fn initial_spawn(&self, index: usize, num_snakes: usize) -> ((i32, i32), Direction) {
+        let spacing = self.grid_width / (num_snakes as i32 + 1);
+        let x = spacing * (index as i32 + 1);
+        let direction = if index % 2 == 0 { Direction::Up } else { Direction::Down };
+        ((x, self.grid_height / 2), direction)
+    }
+
+    /// Whether `pos` is free of any snake body, optionally excluding one snake
+    /// (used when respawning that same snake, so its own stale body doesn't
+    /// block its new spawn cell).
+    fn is_cell_free(&self, pos: (i32, i32), exclude: Option<usize>) -> bool {
+        if pos == self.apple_pos {
+            return false;
+        }
+        for (i, s) in self.snakes.iter().enumerate() {
+            if Some(i) == exclude {
+                continue;
+            }
+            if s.body.contains(&pos) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Picks a spawn position for `index`: prefer the deterministic evenly
+    /// spaced column used at game start; if occupied, fall back to a random
+    /// free cell.
+    fn spawn_position(&self, index: usize) -> ((i32, i32), Direction) {
+        let (preferred, direction) = self.initial_spawn(index, self.snakes.len());
+        if self.is_cell_free(preferred, Some(index)) {
+            return (preferred, direction);
+        }
+
+        let mut rng = rand::thread_rng();
+        loop {
+            let x = rng.gen_range(0..self.grid_width);
+            let y = rng.gen_range(0..self.grid_height);
+            let pos = (x, y);
+            if self.is_cell_free(pos, Some(index)) {
+                return (pos, direction);
+            }
+        }
+    }
+
+    /// Respawns every snake currently marked dead: fresh body of length 1,
+    /// score/kills/death flags reset for the new life. Does not touch snakes
+    /// that are still alive.
+    pub fn respawn_dead(&mut self) {
+        let dead_indices: Vec<usize> = self
+            .snakes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_dead)
+            .map(|(i, _)| i)
+            .collect();
+
+        for i in dead_indices {
+            let (pos, direction) = self.spawn_position(i);
+            self.snakes[i] = SnakeState::new(pos, direction);
+        }
     }
 
     pub fn set_direction(&mut self, snake_index: usize, new_dir: Direction) {
@@ -152,38 +222,47 @@ impl GameState {
             new_heads.push(new_head);
         }
 
+        // Snapshot pre-step alive status and precompute head-to-head collision
+        // pairs against that snapshot, so that when two snakes collide head-on
+        // BOTH die (previously, marking the lower-indexed snake dead first made
+        // the `!is_dead` check skip the higher-indexed snake's own check).
+        let was_alive: Vec<bool> = self.snakes.iter().map(|s| !s.is_dead).collect();
+        let mut head_to_head = vec![false; self.snakes.len()];
+        for i in 0..self.snakes.len() {
+            if !was_alive[i] { continue; }
+            for j in (i + 1)..self.snakes.len() {
+                if !was_alive[j] { continue; }
+                if new_heads[i] == new_heads[j] {
+                    head_to_head[i] = true;
+                    head_to_head[j] = true;
+                }
+            }
+        }
+
         // Check collisions
         for i in 0..self.snakes.len() {
             if self.snakes[i].is_dead { continue; }
             let head = new_heads[i];
-            
+
             // Wall collision
             if head.0 < 0 || head.0 >= self.grid_width || head.1 < 0 || head.1 >= self.grid_height {
                 self.snakes[i].is_dead = true;
                 self.snakes[i].death_by_wall = true;
-                self.game_over = true;
                 continue;
             }
 
             // Head-to-head collision
-            let mut head_collision = false;
-            for j in 0..self.snakes.len() {
-                if i != j && !self.snakes[j].is_dead && head == new_heads[j] {
-                    self.snakes[i].is_dead = true;
-                    self.snakes[i].death_by_opponent = true;
-                    head_collision = true;
-                    self.game_over = true;
-                    break;
-                }
+            if head_to_head[i] {
+                self.snakes[i].is_dead = true;
+                self.snakes[i].death_by_opponent = true;
+                continue;
             }
-            if head_collision { continue; }
 
             // Body collision
             for j in 0..self.snakes.len() {
                 let snake_j = &self.snakes[j];
                 if snake_j.body.contains(&head) {
                     self.snakes[i].is_dead = true;
-                    self.game_over = true;
                     if i == j {
                         self.snakes[i].death_by_self = true;
                     } else {

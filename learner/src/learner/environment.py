@@ -21,9 +21,10 @@ class RustMultiSnakeVecEnv(VecEnv):
     It internally manages the remaining snakes using existing_models.
     """
 
-    def __init__(self, num_games: int = 4, training_count: Optional[int] = None, existing_models: Optional[Dict[str, int]] = None):
+    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, training_count: Optional[int] = None, existing_models: Optional[Dict[str, int]] = None):
         self.num_games = num_games
-        self.total_snakes = num_games * 2
+        self.snakes_per_game = snakes_per_game
+        self.total_snakes = num_games * snakes_per_game
         
         if training_count is None:
             training_count = self.total_snakes
@@ -73,7 +74,7 @@ class RustMultiSnakeVecEnv(VecEnv):
                 "Please build the Rust subproject using maturin (e.g. 'task build-sim')."
             )
 
-        self.games = [animals_simulation.Simulation() for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(self.snakes_per_game) for _ in range(num_games)]
         
         # Global Buffers for ALL snakes
         self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
@@ -86,9 +87,9 @@ class RustMultiSnakeVecEnv(VecEnv):
 
     def reset(self) -> np.ndarray:
         for i, game in enumerate(self.games):
-            obs0, obs1 = game.reset()
-            self.all_obs[i * 2] = obs0
-            self.all_obs[i * 2 + 1] = obs1
+            obs_list = game.reset()
+            for s in range(self.snakes_per_game):
+                self.all_obs[i * self.snakes_per_game + s] = obs_list[s]
             
         # Return only training observations
         if self.training_count == 0:
@@ -117,30 +118,35 @@ class RustMultiSnakeVecEnv(VecEnv):
                     all_actions[idx] = actions[i]
 
         # 2. Step all games
+        # Snakes now respawn per-death inside the Rust engine instead of the
+        # whole game resetting when any one snake dies (that used to truncate
+        # every other snake's episode too, and biased the value function since
+        # SB3 was never told those were truncations rather than true terminals).
+        # game.step() returns per-snake dones plus the pre-respawn terminal
+        # observation for any snake that died this tick; the "obs" it returns
+        # is always the valid next observation (post-respawn where relevant),
+        # so there is no need to call game.reset() here any more.
         for i, game in enumerate(self.games):
-            a0 = int(all_actions[i * 2])
-            a1 = int(all_actions[i * 2 + 1])
-            
-            (o0, o1), (r0, r1), (d0, d1) = game.step(a0, a1)
-            
-            game_done = bool(d0 or d1)
-            
-            self.all_rews[i * 2] = r0
-            self.all_rews[i * 2 + 1] = r1
-            self.all_dones[i * 2] = game_done
-            self.all_dones[i * 2 + 1] = game_done
-            
-            self.all_infos[i * 2] = {}
-            self.all_infos[i * 2 + 1] = {}
-            
-            if game_done:
-                self.all_infos[i * 2]["terminal_observation"] = np.array(o0, dtype=np.float32)
-                self.all_infos[i * 2 + 1]["terminal_observation"] = np.array(o1, dtype=np.float32)
-                
-                o0, o1 = game.reset()
-                
-            self.all_obs[i * 2] = o0
-            self.all_obs[i * 2 + 1] = o1
+            start_idx = i * self.snakes_per_game
+            end_idx = start_idx + self.snakes_per_game
+            actions_list = all_actions[start_idx:end_idx].tolist()
+
+            obs_list, rews_list, dones_list, terminal_obs_list = game.step(actions_list)
+
+            for s in range(self.snakes_per_game):
+                idx = start_idx + s
+                snake_done = bool(dones_list[s])
+
+                self.all_rews[idx] = rews_list[s]
+                self.all_dones[idx] = snake_done
+                self.all_obs[idx] = obs_list[s]
+
+                if snake_done:
+                    self.all_infos[idx] = {
+                        "terminal_observation": np.array(terminal_obs_list[s], dtype=np.float32)
+                    }
+                else:
+                    self.all_infos[idx] = {}
 
         # 3. Extract and return training snake data
         if self.training_count == 0:
