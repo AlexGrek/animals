@@ -7,6 +7,8 @@ import numpy as np
 from stable_baselines3 import PPO
 import animals_simulation
 
+from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("learner.test")
 
@@ -105,36 +107,34 @@ def main():
     amphibia_deaths = [0] * num_amphibias
     amphibia_ticks_survived = [0] * num_amphibias
 
+    def batched_predict(models_list, obs_arr, deterministic=True):
+        """Batch each unique model's predictions in one call instead of one
+        forward pass per agent."""
+        n = obs_arr.shape[0]
+        result = [0] * n
+        for model in set(m for m in models_list if m is not None):
+            idxs = [i for i in range(n) if models_list[i] is model]
+            acts, _ = model.predict(obs_arr[idxs], deterministic=deterministic)
+            for i, a in zip(idxs, acts):
+                result[i] = int(a)
+        return result
+
     logger.info("Running simulation loop...")
     steps = 0
     while steps < args.max_steps:
-        obs = np.array(obs_list, dtype=np.float32)
-        actions = []
-        for i in range(num_snakes):
-            a, _ = models[i].predict(obs[i:i+1], deterministic=True)
-            actions.append(int(a[0]))
+        obs = np.array(obs_list, dtype=np.float32).reshape(num_snakes, SNAKE_OBS_SIZE)
+        actions = batched_predict(models, obs)
 
-        prey_actions = []
-        prey_obs_list = sim.get_all_prey_observations()
-        for p_idx in range(num_preys):
-            if prey_models[p_idx] is not None:
-                p_obs = np.array(prey_obs_list[p_idx], dtype=np.float32).reshape(1, 64)
-                pa, _ = prey_models[p_idx].predict(p_obs, deterministic=True)
-                prey_actions.append(int(pa[0]))
-            else:
-                prey_actions.append(0)
+        prey_obs_arr = np.array(sim.get_all_prey_observations(), dtype=np.float32).reshape(num_preys, PREY_OBS_SIZE)
+        prey_actions = batched_predict(prey_models, prey_obs_arr)
 
-        amphibia_actions = []
-        amphibia_obs_list = sim.get_all_amphibia_observations()
-        for a_idx in range(num_amphibias):
-            if amphibia_models[a_idx] is not None:
-                a_obs = np.array(amphibia_obs_list[a_idx], dtype=np.float32).reshape(1, 64)
-                aa, _ = amphibia_models[a_idx].predict(a_obs, deterministic=True)
-                amphibia_actions.append(int(aa[0]))
-            else:
-                amphibia_actions.append(0)
+        amphibia_obs_arr = np.array(sim.get_all_amphibia_observations(), dtype=np.float32).reshape(num_amphibias, PREY_OBS_SIZE)
+        amphibia_actions = batched_predict(amphibia_models, amphibia_obs_arr)
 
-        obs_list, rewards, dones, _terminal_obs, _, prey_rewards, prey_dones, _, amphibia_rewards, amphibia_dones = sim.step(actions, prey_actions, amphibia_actions)
+        (obs_list, rewards, dones, _terminal_obs,
+         _, prey_rewards, prey_dones,
+         _, amphibia_rewards, amphibia_dones,
+         _, _) = sim.step(actions, prey_actions, amphibia_actions)
         steps += 1
 
         for p_idx in range(num_preys):

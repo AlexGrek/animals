@@ -11,10 +11,12 @@ Multi-agent reinforcement learning (MARL) project: a Rust snake game engine trai
 All workflows go through `task` (Taskfile runner). The env var `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` is required for all cargo builds (Python 3.14 is newer than pyo3 0.22 supports); the Taskfile sets it.
 
 ```bash
-task check                # cargo check the Rust workspace
-task build-sim            # Build PyO3 module + install into learner venv (uv pip install -e)
-task train STEPS=500000   # Train the PPO model (saves to learner/models/snake_model.zip)
-task play                 # Run the Bevy game, manual keyboard control
+task check                     # cargo check the Rust workspace
+task build-sim                 # Build PyO3 module + install into learner venv (uv pip install -e)
+task train STEPS=500000        # Train the snake PPO model (saves to learner/models/snake_model.zip)
+task train-prey STEPS=1000000  # Train the prey PPO model against a frozen snake model
+task train-amphibia STEPS=1000000  # Train the amphibia PPO model against a frozen snake model
+task play                      # Run the Bevy game, manual keyboard control
 task play-ai -- --snakes 4 --model models/v1.zip --model models/v2.zip   # Watch trained models play
 task test-ai -- --snakes 4 --model models/v1.zip --output results.json  # Headless full-speed eval, JSON stats
 ```
@@ -23,10 +25,14 @@ Training options beyond STEPS require running directly (from `learner/`, with `P
 
 ```bash
 uv run python -m learner.main --num-games 16 --snakes-per-game 2 --num-procs 4 \
-    --existing models/v1.zip:4 --existing models/v2.zip:2
+    --existing models/v1.zip:4 --existing models/v2.zip:2 \
+    --preys-per-game 2 --amphibias-per-game 1 \
+    --prey-model models/prey_model.zip --amphibia-model models/amphibia_model.zip
+uv run python -m learner.train_prey --num-games 16 --preys-per-game 1 --snake-model models/snake_model.zip
+uv run python -m learner.train_amphibia --num-games 16 --amphibias-per-game 1 --snake-model models/snake_model.zip
 ```
 
-`--num-games` must be evenly divisible by `--num-procs`. `--existing path:count` fills snake slots with frozen past models (mixed-model self-play).
+`--num-games` must be evenly divisible by `--num-procs`. `--existing path:count` fills snake slots with frozen past models (mixed-model self-play). Any frozen counterpart model (prey/amphibia for snake training, snake for prey/amphibia training) that is missing or has a stale observation shape falls back to a static "do nothing" action instead of erroring (`learner/src/learner/model_utils.py`) — this is what lets the pipeline bootstrap from zero trained models: train snake vs. static prey first, then prey/amphibia vs. that snake, then snake again vs. the newly trained prey/amphibia, and so on.
 
 **After any Rust change to `animals_engine` or `animals_simulation`, run `task build-sim`** — otherwise Python keeps importing the stale compiled extension.
 
@@ -34,22 +40,24 @@ Toolchain: Rust 1.85+ (edition 2024), Python 3.14+, `uv` for Python deps (venv l
 
 ## Architecture
 
-Three Rust crates (cargo workspace) + one Python package:
+Three Rust crates (cargo workspace) + one Python package. Three actor types: **Snake** (predator, self-play), **Prey**, **Amphibia** (the latter two share one observation layout and reward function but differ in terrain speed — `Species::speed_on`).
 
-- **`animals_engine`** — headless game logic. `GameState` holds N `SnakeState`s; `get_relative_observation(snake_index)` produces the per-snake observation. Snakes run independent per-snake episodes: on death a snake is respawned in place via `respawn_dead()` rather than ending the whole game, so one snake's mistake never truncates the others. No I/O, no globals — instances are fully independent.
-- **`animals_simulation`** — PyO3 `cdylib` wrapping `GameState` as a Python `Simulation` class (`new(num_snakes)`, `reset() -> obs per snake`, `step(actions: list) -> (obs, rewards, dones, terminal_obs)`, `get_stats()`). `dones[i]` is true on the tick snake i died; `obs[i]` is that snake's post-respawn observation and `terminal_obs[i]` its pre-respawn (true terminal) observation on death ticks. The reward function lives here (`step`), not in the engine.
-- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick: `num_snakes * 66` f32 observations out, `num_snakes` i32 actions back. The engine no longer sets `game_over` itself, so `game_tick` sets it when it sees a dead snake to preserve the manual "freeze, press Space to restart" UX.
-- **`learner`** (Python, in `learner/src/learner/`) — `environment.py` defines `RustMultiSnakeVecEnv`, a custom SB3 `VecEnv` that presents only the training snakes to PPO while internally computing actions for frozen "existing" opponent models ("shared brain" self-play trick — see `docs/learning.md`), and `MultiProcRustVecEnv`, a pipe-based multiprocess wrapper around it. `main.py` trains, `play.py` is the TCP inference server for Bevy, `test.py` runs headless evals.
+- **`animals_engine`** — headless game logic. `GameState` holds N `SnakeState`s and M `PreyState`s (each prey tagged with a `Species`). `get_relative_observation(snake_index)` produces the per-snake observation (`SNAKE_OBS_SIZE` = 69 floats); `get_prey_observation(prey_index)` produces the shared prey/amphibia observation (`PREY_OBS_SIZE` = 67 floats). Snakes run independent per-snake episodes: on death a snake is respawned in place via `respawn_dead()` rather than ending the whole game. Prey/amphibia respawn via a separate `respawn_dead_preys()` call — **not** automatic inside `step()`, so callers can read a dead prey's true terminal observation before it teleports to its next spawn. No I/O, no globals — instances are fully independent.
+- **`animals_simulation`** — PyO3 `cdylib` wrapping `GameState` as a Python `Simulation` class (`new(num_snakes, num_preys, num_amphibias)`, `reset() -> obs per snake`, `get_all_prey_observations()`, `get_all_amphibia_observations()`, `step(actions, prey_actions, amphibia_actions) -> 12-tuple`, `get_stats()`). The 12-tuple is `(obs, rewards, dones, terminal_obs, prey_obs, prey_rewards, prey_dones, amphibia_obs, amphibia_rewards, amphibia_dones, prey_terminal_obs, amphibia_terminal_obs)`. All `*_dones[i]` are true on the tick that actor died; `*_obs` is always the post-respawn (next-episode) observation, `*_terminal_obs` is the true pre-respawn observation (meaningful only where `dones` is true). The reward function lives here (`step`), not in the engine.
+- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick: `num_snakes * SNAKE_OBS_SIZE + total_preys * PREY_OBS_SIZE` f32 observations out, `num_snakes + total_preys` i32 actions back. It calls `engine.step()` then `engine.respawn_dead_preys()` every tick (it doesn't need terminal observations, so it respawns immediately). The engine no longer sets `game_over` itself, so `game_tick` sets it when it sees a dead snake to preserve the manual "freeze, press Space to restart" UX.
+- **`learner`** (Python, in `learner/src/learner/`) — `constants.py` mirrors the Rust size constants; `model_utils.py` has the shared `load_opponent`/`predict_actions` helpers (static-action fallback + batched inference) used by all three envs below. `environment.py` defines `RustMultiSnakeVecEnv` (trains snake, drives frozen prey+amphibia opponents) and `MultiProcRustVecEnv` (pipe-based multiprocess wrapper). `prey_environment.py`/`amphibia_environment.py` define `RustPreyVecEnv`/`RustAmphibiaVecEnv` (train prey/amphibia against a frozen snake). `main.py`/`train_prey.py`/`train_amphibia.py` are the three training entrypoints, `play.py` is the TCP inference server for Bevy, `test.py` runs headless evals.
 
 ### Cross-language invariants
 
-The **66-float observation** (8×8 relative grid + 2 food-direction floats) and the **3-action discrete space** (0=straight, 1=right, 2=left) are hardcoded in four places that must stay in sync:
+The **snake observation size** (`SNAKE_OBS_SIZE = 69`: 8×8 relative grid + prey unit-direction (2) + normalized distance (1) + hunger (1) + own length (1)), the **prey/amphibia observation size** (`PREY_OBS_SIZE = 67`: 8×8 absolute grid + nearest-snake-head unit-direction (2) + normalized distance (1)), the **snake action space** (3: straight/right/left), and the **prey/amphibia action space** (5: stand/up/right/down/left) are hardcoded in these places that must stay in sync:
 
-1. `animals_engine/src/snake.rs` — `get_relative_observation` returns `[f32; 66]`
-2. `learner/src/learner/environment.py` — `spaces.Box(shape=(66,))` (declared twice: both VecEnv classes)
-3. `learner/src/learner/play.py` — struct packing `num_snakes * 66 * 4` bytes
-4. `animals_game/src/main.rs` — byte payload sizing in `game_tick`
+1. `animals_engine/src/lib.rs` — `SNAKE_OBS_SIZE`, `PREY_OBS_SIZE`, `HUNGER_LIMIT` constants (used by `game.rs`'s two observation functions)
+2. `learner/src/learner/constants.py` — Python mirror of the same constants, imported by every env/script below
+3. `learner/src/learner/environment.py` — `spaces.Box(shape=(SNAKE_OBS_SIZE,))` (both VecEnv classes)
+4. `learner/src/learner/prey_environment.py` / `amphibia_environment.py` — `spaces.Box(shape=(PREY_OBS_SIZE,))`
+5. `learner/src/learner/play.py` — struct packing byte sizes for the Bevy TCP protocol
+6. `animals_game/src/main.rs` — byte payload sizing in `gather_observations`/`spawn_ai_worker` (imports the same Rust constants, so this one syncs automatically)
 
-Changing the observation also invalidates saved checkpoints in `learner/models/` (SB3 load will fail on shape mismatch) — retrain or delete them.
+Changing either observation size also invalidates saved checkpoints in `learner/models/` (SB3 load will fail on shape mismatch) — retrain or delete them. A frozen counterpart model with a stale shape is treated as "missing" and falls back to a static action rather than crashing (`model_utils.load_opponent`).
 
 Grid size (100×100) is duplicated in `animals_simulation/src/lib.rs` (`GameState::new(100, 100, ...)`) and `animals_game/src/main.rs` (`GRID_WIDTH`/`GRID_HEIGHT` constants).

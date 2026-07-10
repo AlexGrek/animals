@@ -43,7 +43,7 @@ def main():
             device="cpu",
             batch_size=2048,
             n_steps=512,
-            ent_coef=0.05, # Higher entropy coefficient to encourage amphibia to explore escaping routes
+            ent_coef=0.02, # Reward now includes threat-distance shaping (dense signal), so less entropy is needed to find escape routes than with pure sparse survival reward.
         )
         
         logger.info(f"Starting Amphibia training for {args.steps} steps...")

@@ -15,57 +15,73 @@ except ImportError:
 
 from stable_baselines3 import PPO
 
+from learner.constants import (
+    SNAKE_OBS_SIZE,
+    PREY_OBS_SIZE,
+    SNAKE_NUM_ACTIONS,
+    PREY_NUM_ACTIONS,
+)
+from learner.model_utils import load_opponent, predict_actions
+
 class RustMultiSnakeVecEnv(VecEnv):
     """
     A Custom VecEnv that takes N Rust PyO3 simulation instances
     and presents training_count independent environments to Stable-Baselines3.
-    It internally manages the remaining snakes using existing_models.
+    It internally manages the remaining snakes using existing_models, and drives
+    the prey/amphibia opponents with their own frozen models so snakes learn to
+    hunt both.
     """
 
-    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, training_count: Optional[int] = None, existing_models: Optional[Dict[str, int]] = None):
+    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, training_count: Optional[int] = None,
+                 existing_models: Optional[Dict[str, int]] = None,
+                 preys_per_game: int = 2, amphibias_per_game: int = 1,
+                 prey_model_path: str = "models/prey_model.zip",
+                 amphibia_model_path: str = "models/amphibia_model.zip"):
         self.num_games = num_games
         self.snakes_per_game = snakes_per_game
+        self.preys_per_game = preys_per_game
+        self.amphibias_per_game = amphibias_per_game
         self.total_snakes = num_games * snakes_per_game
-        
+
         if training_count is None:
             training_count = self.total_snakes
         if existing_models is None:
             existing_models = {}
-            
+
         self.training_count = training_count
         self.existing_models = {}
-        
-        # Load the models lazily (useful for multiprocessing to avoid passing large objects)
+
+        # Load opponent snake checkpoints, degrading to random actions on a
+        # missing file or obs-shape mismatch (see model_utils.load_opponent).
         for path, count in existing_models.items():
             if count > 0:
-                self.existing_models[path] = PPO.load(path)
-            
+                self.existing_models[path] = load_opponent(path, SNAKE_OBS_SIZE)
+
         # Create snake assignment list
         assignments = ['train'] * training_count
         for name, count in existing_models.items():
             assignments.extend([name] * count)
-            
+
         if len(assignments) != self.total_snakes:
             raise ValueError(f"Total snakes ({self.total_snakes}) does not match sum of training ({training_count}) and existing models.")
-            
+
         # Shuffle assignments so training agent plays diverse opponents
         random.shuffle(assignments)
-        
+
         # Pre-compute indices for each model
         self.training_indices = [i for i, a in enumerate(assignments) if a == 'train']
         self.model_indices = {name: [i for i, a in enumerate(assignments) if a == name] for name in self.existing_models.keys()}
-        
+
         # Action space: 3 discrete actions (0: Straight, 1: Turn Right, 2: Turn Left)
-        action_space = spaces.Discrete(3)
-        
-        # Observation space: 66 floats (8x8 grid + 2D global direction to apple)
+        action_space = spaces.Discrete(SNAKE_NUM_ACTIONS)
+
         observation_space = spaces.Box(
-            low=-1.0, 
-            high=1.0, 
-            shape=(66,), 
+            low=-1.0,
+            high=1.0,
+            shape=(SNAKE_OBS_SIZE,),
             dtype=np.float32
         )
-        
+
         # Super init with training_count (the number of envs SB3 sees)
         super().__init__(self.training_count, observation_space, action_space)
 
@@ -75,28 +91,21 @@ class RustMultiSnakeVecEnv(VecEnv):
                 "Please build the Rust subproject using maturin (e.g. 'task build-sim')."
             )
 
-        # Load prey model
-        prey_model_path = "models/prey_model.zip"
-        if not os.path.exists(prey_model_path):
-            alt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), prey_model_path)
-            if os.path.exists(alt_path):
-                prey_model_path = alt_path
-            else:
-                alt_path2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../models/prey_model.zip")
-                if os.path.exists(alt_path2):
-                    prey_model_path = alt_path2
-                else:
-                    raise FileNotFoundError(f"Prey model not found at {prey_model_path}")
-        self.prey_model = PPO.load(prey_model_path)
+        # Frozen prey/amphibia opponents (random-action fallback if unavailable).
+        self.prey_model = load_opponent(prey_model_path, PREY_OBS_SIZE)
+        self.amphibia_model = load_opponent(amphibia_model_path, PREY_OBS_SIZE)
 
-        self.games = [animals_simulation.Simulation(self.snakes_per_game, 2, 0) for _ in range(num_games)]
-        
+        self.games = [
+            animals_simulation.Simulation(self.snakes_per_game, self.preys_per_game, self.amphibias_per_game)
+            for _ in range(num_games)
+        ]
+
         # Global Buffers for ALL snakes
-        self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
+        self.all_obs = np.zeros((self.total_snakes, SNAKE_OBS_SIZE), dtype=np.float32)
         self.all_rews = np.zeros((self.total_snakes,), dtype=np.float32)
         self.all_dones = np.zeros((self.total_snakes,), dtype=bool)
         self.all_infos = [{} for _ in range(self.total_snakes)]
-        
+
         # SB3 action buffer (only size of training_count)
         self.actions = np.zeros((self.training_count,), dtype=int)
 
@@ -108,42 +117,64 @@ class RustMultiSnakeVecEnv(VecEnv):
             
         # Return only training observations
         if self.training_count == 0:
-            return np.zeros((0, 66), dtype=np.float32)
+            return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32)
         return np.copy(self.all_obs[self.training_indices])
 
     def step_async(self, actions: np.ndarray) -> None:
         self.actions = actions
 
+    def _gather_prey_actions(self) -> Tuple[List[List[int]], List[List[int]]]:
+        """Batch-predict prey and amphibia actions for every game in one shot.
+
+        Returns (prey_actions_per_game, amphibia_actions_per_game). Gathering all
+        observations first and running a single vectorized `predict` per model
+        replaces the old per-agent single-row forward passes (~32 calls/step).
+        """
+        prey_obs_all, amphibia_obs_all = [], []
+        for game in self.games:
+            prey_obs_all.extend(game.get_all_prey_observations())
+            amphibia_obs_all.extend(game.get_all_amphibia_observations())
+
+        prey_arr = np.asarray(prey_obs_all, dtype=np.float32).reshape(-1, PREY_OBS_SIZE)
+        amphibia_arr = np.asarray(amphibia_obs_all, dtype=np.float32).reshape(-1, PREY_OBS_SIZE)
+        prey_flat = predict_actions(self.prey_model, prey_arr, PREY_NUM_ACTIONS)
+        amphibia_flat = predict_actions(self.amphibia_model, amphibia_arr, PREY_NUM_ACTIONS)
+
+        prey_per_game, amphibia_per_game = [], []
+        for i in range(self.num_games):
+            p0 = i * self.preys_per_game
+            a0 = i * self.amphibias_per_game
+            prey_per_game.append(prey_flat[p0:p0 + self.preys_per_game])
+            amphibia_per_game.append(amphibia_flat[a0:a0 + self.amphibias_per_game])
+        return prey_per_game, amphibia_per_game
+
     def step_wait(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[Dict[str, Any]]]:
         # 1. Compute actions for all snakes
-        # ...
         all_actions = np.zeros(self.total_snakes, dtype=int)
-        
+
         # Place training actions
         for idx, train_idx in enumerate(self.training_indices):
             all_actions[train_idx] = self.actions[idx]
-            
-        # Compute actions for existing models
+
+        # Compute actions for existing opponent snake models (batched; a None
+        # model — missing/incompatible checkpoint — acts uniformly at random).
         for name, model in self.existing_models.items():
             indices = self.model_indices[name]
             if len(indices) > 0:
-                obs_for_model = self.all_obs[indices]
-                actions, _ = model.predict(obs_for_model, deterministic=False)
+                acts = predict_actions(model, self.all_obs[indices], SNAKE_NUM_ACTIONS)
                 for i, idx in enumerate(indices):
-                    all_actions[idx] = actions[i]
+                    all_actions[idx] = acts[i]
+
+        prey_per_game, amphibia_per_game = self._gather_prey_actions()
 
         for i, game in enumerate(self.games):
             start_idx = i * self.snakes_per_game
             end_idx = start_idx + self.snakes_per_game
             actions_list = all_actions[start_idx:end_idx].tolist()
 
-            prey_obs_list = game.get_all_prey_observations()
-            prey_actions = []
-            for p_obs in prey_obs_list:
-                pa, _ = self.prey_model.predict(np.array(p_obs, dtype=np.float32).reshape(1, 64), deterministic=False)
-                prey_actions.append(int(pa[0]))
-
-            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _, _, _, _ = game.step(actions_list, prey_actions, [])
+            obs_list, rews_list, dones_list, terminal_obs_list, *_ = game.step(
+                actions_list, prey_per_game[i], amphibia_per_game[i]
+            )
 
             for s in range(self.snakes_per_game):
                 idx = start_idx + s
@@ -162,7 +193,7 @@ class RustMultiSnakeVecEnv(VecEnv):
 
         # 3. Extract and return training snake data
         if self.training_count == 0:
-             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
+             return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         buf_obs = self.all_obs[self.training_indices]
         buf_rews = self.all_rews[self.training_indices]
@@ -245,8 +276,8 @@ class MultiProcRustVecEnv(VecEnv):
             self.processes.append(process)
             work_remote.close()
             
-        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(66,), dtype=np.float32)
-        action_space = spaces.Discrete(3)
+        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(SNAKE_OBS_SIZE,), dtype=np.float32)
+        action_space = spaces.Discrete(SNAKE_NUM_ACTIONS)
         
         self.training_counts = []
         for remote in self.remotes:
@@ -262,12 +293,12 @@ class MultiProcRustVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         
         if self.num_envs == 0:
-            return np.zeros((0, 66), dtype=np.float32)
-            
+            return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32)
+
         # We need to filter out empty arrays (e.g. if a proc has 0 training count)
         valid_results = [r for r in results if len(r) > 0]
         if not valid_results:
-             return np.zeros((0, 66), dtype=np.float32)
+             return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32)
         return np.concatenate(valid_results)
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -290,7 +321,7 @@ class MultiProcRustVecEnv(VecEnv):
             merged_infos.extend(info_list)
             
         if self.num_envs == 0:
-             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
+             return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         return np.concatenate([o for o in obs_list if len(o) > 0]), \
                np.concatenate([r for r in rews_list if len(r) > 0]), \

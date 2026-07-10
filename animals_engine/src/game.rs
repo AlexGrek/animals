@@ -1,8 +1,10 @@
 use rand::Rng;
+use std::collections::HashSet;
 use crate::map::{Map, Terrain};
 use crate::snake::SnakeState;
 use crate::species::Species;
 use crate::direction::Direction;
+use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
 
 #[derive(Clone, Debug)]
 pub struct PreyState {
@@ -150,7 +152,7 @@ impl GameState {
         for i in 0..self.snakes.len() {
             if !self.snakes[i].is_dead {
                 self.snakes[i].steps_since_last_eat += 1;
-                if self.snakes[i].steps_since_last_eat >= 600 {
+                if self.snakes[i].steps_since_last_eat >= HUNGER_LIMIT {
                     self.snakes[i].is_dead = true;
                     self.snakes[i].death_by_hunger = true;
                 }
@@ -305,7 +307,13 @@ impl GameState {
                 self.snakes[i].body.pop();
             }
         }
+    }
 
+    /// Respawns every prey currently marked dead at a random free cell. Callers
+    /// invoke this after `step()` (the training simulation captures a dead
+    /// prey's true pre-respawn terminal observation first; the visualizer just
+    /// respawns immediately). Mirrors `respawn_dead()` for snakes.
+    pub fn respawn_dead_preys(&mut self) {
         for p_idx in 0..self.preys.len() {
             if self.preys[p_idx].is_dead {
                 self.spawn_prey(p_idx);
@@ -349,8 +357,19 @@ impl GameState {
         }
     }
 
-    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 66] {
-        let mut obs = [0.0; 66];
+    /// Snake observation (`SNAKE_OBS_SIZE` floats):
+    /// - `[0..64)`  — 8x8 grid in the snake's rotated frame (4 cells ahead,
+    ///   3 behind, 4 right, 3 left). Cell encoding: prey `1.0`; wall/rock/own
+    ///   body `-1.0`; enemy head `-0.8`; enemy body `-0.5`; else passable
+    ///   terrain `Species::Snake.speed_on(terrain) * 0.5`.
+    /// - `[64]`/`[65]` — unit direction to the nearest alive prey (forward /
+    ///   right components), zero when no prey exists.
+    /// - `[66]` — distance to that prey normalized by the larger grid
+    ///   dimension (`1.0` when no prey exists).
+    /// - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT`.
+    /// - `[68]` — own length / 100, capped at 1.
+    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; SNAKE_OBS_SIZE] {
+        let mut obs = [0.0; SNAKE_OBS_SIZE];
         let snake = &self.snakes[snake_index];
         if snake.body.is_empty() { return obs; }
 
@@ -358,6 +377,25 @@ impl GameState {
         let dir = snake.direction;
         let vec_straight = dir.to_vector();
         let vec_right = dir.turn_right().to_vector();
+
+        // Build occupancy sets once (O(total_length)), then each of the 64 grid
+        // cells is an O(1) lookup instead of a linear scan over every body Vec.
+        let own_body: HashSet<(i32, i32)> = snake.body.iter().copied().collect();
+        let mut enemy_bodies: HashSet<(i32, i32)> = HashSet::new();
+        let mut enemy_heads: HashSet<(i32, i32)> = HashSet::new();
+        for (j, s) in self.snakes.iter().enumerate() {
+            if j == snake_index || s.is_dead { continue; }
+            if let Some(&h) = s.body.first() {
+                enemy_heads.insert(h);
+            }
+            enemy_bodies.extend(s.body.iter().copied());
+        }
+        let mut prey_cells: HashSet<(i32, i32)> = HashSet::new();
+        for p in &self.preys {
+            if !p.is_dead {
+                prey_cells.insert((p.pos.0.round() as i32, p.pos.1.round() as i32));
+            }
+        }
 
         let mut idx = 0;
         for f in -3..=4 {
@@ -368,74 +406,80 @@ impl GameState {
 
                 let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
                 let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
-                
-                let mut has_prey = false;
-                for p in &self.preys {
-                    if !p.is_dead {
-                        let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
-                        if cell == p_grid {
-                            has_prey = true;
-                            break;
-                        }
-                    }
-                }
 
-                let cell_val = if has_prey {
+                obs[idx] = if prey_cells.contains(&cell) {
                     1.0
-                } else if out_of_bounds || terrain == Terrain::Rock {
+                } else if out_of_bounds || terrain == Terrain::Rock || own_body.contains(&cell) {
                     -1.0
-                } else if snake.body.contains(&cell) {
-                    -1.0
+                } else if enemy_heads.contains(&cell) {
+                    -0.8
+                } else if enemy_bodies.contains(&cell) {
+                    -0.5
                 } else {
-                    let mut is_enemy = false;
-                    for j in 0..self.snakes.len() {
-                        if snake_index != j && self.snakes[j].body.contains(&cell) {
-                            is_enemy = true;
-                            break;
-                        }
-                    }
-                    if is_enemy {
-                        -0.5
-                    } else {
-                        Species::Snake.speed_on(terrain) * 0.5
-                    }
+                    Species::Snake.speed_on(terrain) * 0.5
                 };
-                
-                obs[idx] = cell_val;
                 idx += 1;
             }
         }
 
-        // Find closest alive prey
-        let mut closest_prey_pos = (0, 0);
-        let mut min_dist = f32::MAX;
+        // Unit direction + normalized distance to the nearest alive prey. A unit
+        // vector keeps the heading signal strong at any range (the old
+        // `dx / max_dim` encoding shrank to ~0.01 for nearby prey).
+        let mut closest: Option<(i32, i32, f32)> = None;
         for p in &self.preys {
             if !p.is_dead {
                 let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
                 let dx = p_grid.0 - head.0;
                 let dy = p_grid.1 - head.1;
                 let d = ((dx * dx + dy * dy) as f32).sqrt();
-                if d < min_dist {
-                    min_dist = d;
-                    closest_prey_pos = p_grid;
+                if closest.map_or(true, |(_, _, cd)| d < cd) {
+                    closest = Some((dx, dy, d));
                 }
             }
         }
 
-        let dx = closest_prey_pos.0 - head.0;
-        let dy = closest_prey_pos.1 - head.1;
         let max_dim = self.grid_width.max(self.grid_height) as f32;
-        obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
-        obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
+        if let Some((dx, dy, dist)) = closest {
+            let d = dist.max(1e-6);
+            obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / d;
+            obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / d;
+            obs[66] = (dist / max_dim).min(1.0);
+        } else {
+            obs[66] = 1.0;
+        }
+        obs[67] = (snake.steps_since_last_eat as f32 / HUNGER_LIMIT as f32).min(1.0);
+        obs[68] = (snake.body.len() as f32 / 100.0).min(1.0);
 
         obs
     }
 
-    pub fn get_prey_observation(&self, prey_index: usize) -> [f32; 64] {
-        let mut obs = [0.0; 64];
+    /// Prey observation (`PREY_OBS_SIZE` floats), shared by Prey and Amphibia
+    /// (terrain values are already species-relative, so the two variants read
+    /// the same map differently without needing a species flag):
+    /// - `[0..64)` — 8x8 grid in the absolute frame (up is north). Cell
+    ///   encoding: OOB/rock `-1.0`; snake head (the lethal part) `-0.8`; snake
+    ///   body `-0.5`; else `prey.species.speed_on(terrain) * 0.5` (so water
+    ///   reads ~0.1 to a Prey but ~0.5 to an Amphibia).
+    /// - `[64]`/`[65]` — unit direction (east / north) to the nearest alive
+    ///   snake head, zero when no snake is alive.
+    /// - `[66]` — distance to that head normalized by the larger grid
+    ///   dimension (`1.0` when no snake is alive). Global threat sense the prey
+    ///   needs to flee predators outside its local 8x8 patch.
+    pub fn get_prey_observation(&self, prey_index: usize) -> [f32; PREY_OBS_SIZE] {
+        let mut obs = [0.0; PREY_OBS_SIZE];
         let prey = &self.preys[prey_index];
         let prey_grid_pos = (prey.pos.0.round() as i32, prey.pos.1.round() as i32);
-        
+
+        let mut snake_bodies: HashSet<(i32, i32)> = HashSet::new();
+        let mut snake_heads: HashSet<(i32, i32)> = HashSet::new();
+        for snake in &self.snakes {
+            if snake.is_dead { continue; }
+            if let Some(&h) = snake.body.first() {
+                snake_heads.insert(h);
+            }
+            snake_bodies.extend(snake.body.iter().copied());
+        }
+
         let mut idx = 0;
         for dy in -3..=4 { // North-South (Up is always North)
             for dx in -3..=4 { // East-West
@@ -446,26 +490,40 @@ impl GameState {
                 let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
                 let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
 
-                let cell_val = if out_of_bounds || terrain == Terrain::Rock {
+                obs[idx] = if out_of_bounds || terrain == Terrain::Rock {
                     -1.0
+                } else if snake_heads.contains(&cell) {
+                    -0.8
+                } else if snake_bodies.contains(&cell) {
+                    -0.5
                 } else {
-                    let mut has_snake = false;
-                    for snake in &self.snakes {
-                        if !snake.is_dead && snake.body.contains(&cell) {
-                            has_snake = true;
-                            break;
-                        }
-                    }
-                    if has_snake {
-                        -0.5
-                    } else {
-                        prey.species.speed_on(terrain) * 0.5
-                    }
+                    prey.species.speed_on(terrain) * 0.5
                 };
-                obs[idx] = cell_val;
                 idx += 1;
             }
         }
+
+        // Unit direction + normalized distance to the nearest alive snake head.
+        let mut closest: Option<(i32, i32, f32)> = None;
+        for h in &snake_heads {
+            let dx = h.0 - prey_grid_pos.0;
+            let dy = h.1 - prey_grid_pos.1;
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            if closest.map_or(true, |(_, _, cd)| d < cd) {
+                closest = Some((dx, dy, d));
+            }
+        }
+
+        let max_dim = self.grid_width.max(self.grid_height) as f32;
+        if let Some((dx, dy, dist)) = closest {
+            let d = dist.max(1e-6);
+            obs[64] = dx as f32 / d;
+            obs[65] = dy as f32 / d;
+            obs[66] = (dist / max_dim).min(1.0);
+        } else {
+            obs[66] = 1.0;
+        }
+
         obs
     }
 }

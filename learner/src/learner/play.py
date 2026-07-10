@@ -7,6 +7,8 @@ import sys
 import numpy as np
 from stable_baselines3 import PPO
 
+from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("learner.play")
 
@@ -95,15 +97,15 @@ def main():
     # Start TCP Server
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
-    bytes_expected = (num_snakes * 66 + (num_preys + num_amphibias) * 64) * 4
-    floats_expected = num_snakes * 66 + (num_preys + num_amphibias) * 64
-    
+
+    bytes_expected = (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
+    floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
+
     try:
         server.bind(("127.0.0.1", args.port))
         server.listen(1)
         logger.info(f"Listening for Bevy connection on 127.0.0.1:{args.port}...")
-        
+
         def recvall(sock, n):
             data = bytearray()
             while len(data) < n:
@@ -117,55 +119,63 @@ def main():
             conn, addr = server.accept()
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             logger.info(f"Bevy connected from {addr}!")
-            
+
             try:
                 while True:
                     data = recvall(conn, bytes_expected)
                     if not data:
                         break
-                        
+
                     unpacked = struct.unpack(f'<{floats_expected}f', data)
-                    snake_obs = np.array(unpacked[:num_snakes * 66], dtype=np.float32).reshape(num_snakes, 66)
-                    
-                    prey_start = num_snakes * 66
-                    prey_end = prey_start + num_preys * 64
-                    amphibia_end = prey_end + num_amphibias * 64
-                    
-                    prey_obs = np.array(unpacked[prey_start:prey_end], dtype=np.float32).reshape(num_preys, 64)
-                    amphibia_obs = np.array(unpacked[prey_end:amphibia_end], dtype=np.float32).reshape(num_amphibias, 64)
-                    
-                    actions = []
-                    for i in range(num_snakes):
-                        a, _ = models[i].predict(snake_obs[i:i+1], deterministic=True)
-                        actions.append(int(a[0]))
-                    
-                    # Predict prey actions
-                    for p_idx in range(num_preys):
-                        if prey_models[p_idx] is not None:
-                            pa, _ = prey_models[p_idx].predict(prey_obs[p_idx:p_idx+1], deterministic=True)
-                            prey_action = int(pa[0])
-                        else:
-                            prey_action = 0 # Stand still
-                        actions.append(prey_action)
-                        
-                    # Predict amphibia actions
-                    for a_idx in range(num_amphibias):
-                        if amphibia_models[a_idx] is not None:
-                            aa, _ = amphibia_models[a_idx].predict(amphibia_obs[a_idx:a_idx+1], deterministic=True)
-                            amphibia_action = int(aa[0])
-                        else:
-                            amphibia_action = 0 # Stand still
-                        actions.append(amphibia_action)
-                    
+                    snake_obs = np.array(unpacked[:num_snakes * SNAKE_OBS_SIZE], dtype=np.float32).reshape(num_snakes, SNAKE_OBS_SIZE)
+
+                    prey_start = num_snakes * SNAKE_OBS_SIZE
+                    prey_end = prey_start + num_preys * PREY_OBS_SIZE
+                    amphibia_end = prey_end + num_amphibias * PREY_OBS_SIZE
+
+                    prey_obs = np.array(unpacked[prey_start:prey_end], dtype=np.float32).reshape(num_preys, PREY_OBS_SIZE)
+                    amphibia_obs = np.array(unpacked[prey_end:amphibia_end], dtype=np.float32).reshape(num_amphibias, PREY_OBS_SIZE)
+
+                    # Batch each unique loaded model's predictions in one call
+                    # instead of one forward pass per agent.
+                    snake_action_map = {}
+                    for path in loaded_models:
+                        idxs = [i for i in range(num_snakes) if model_paths[i] == path]
+                        if idxs:
+                            acts, _ = loaded_models[path].predict(snake_obs[idxs], deterministic=True)
+                            for i, a in zip(idxs, acts):
+                                snake_action_map[i] = int(a)
+                    actions = [snake_action_map[i] for i in range(num_snakes)]
+
+                    prey_action_map = {i: 0 for i in range(num_preys)}
+                    if prey_model_paths:
+                        for path in set(prey_model_paths):
+                            idxs = [i for i in range(num_preys) if prey_model_paths[i] == path]
+                            if idxs:
+                                acts, _ = loaded_prey_models[path].predict(prey_obs[idxs], deterministic=True)
+                                for i, a in zip(idxs, acts):
+                                    prey_action_map[i] = int(a)
+                    actions.extend(prey_action_map[i] for i in range(num_preys))
+
+                    amphibia_action_map = {i: 0 for i in range(num_amphibias)}
+                    if amphibia_model_paths:
+                        for path in set(amphibia_model_paths):
+                            idxs = [i for i in range(num_amphibias) if amphibia_model_paths[i] == path]
+                            if idxs:
+                                acts, _ = loaded_amphibia_models[path].predict(amphibia_obs[idxs], deterministic=True)
+                                for i, a in zip(idxs, acts):
+                                    amphibia_action_map[i] = int(a)
+                    actions.extend(amphibia_action_map[i] for i in range(num_amphibias))
+
                     response = struct.pack(f'<{num_snakes + num_preys + num_amphibias}i', *actions)
                     conn.sendall(response)
-                    
+
             except ConnectionResetError:
                 pass
             finally:
                 conn.close()
                 logger.info("Bevy disconnected. Waiting for new connection...")
-                
+
     except KeyboardInterrupt:
         logger.info("Shutting down inference server.")
     finally:

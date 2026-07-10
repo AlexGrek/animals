@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::window::PresentMode;
-use animals_engine::{Direction, GameState, RelativeAction};
+use animals_engine::{Direction, GameState, RelativeAction, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
 use animals_engine::species::Species;
 use animals_engine::map::Terrain;
 use std::io::{Read, Write};
@@ -192,10 +192,10 @@ fn snake_color(idx: usize, total: usize) -> Color {
     Color::hsl(hue, 1.0, 0.5)
 }
 
-/// Flattens every snake's observation into one `num_snakes * 130` buffer, in the
-/// same layout the Python server expects.
+/// Flattens every snake observation followed by every prey observation into one
+/// buffer, in the same layout the Python inference server expects.
 fn gather_observations(game: &GameState) -> Vec<f32> {
-    let mut obs = Vec::with_capacity(game.snakes.len() * 66 + game.preys.len() * 64);
+    let mut obs = Vec::with_capacity(game.snakes.len() * SNAKE_OBS_SIZE + game.preys.len() * PREY_OBS_SIZE);
     for s in 0..game.snakes.len() {
         obs.extend_from_slice(&game.get_relative_observation(s));
     }
@@ -214,7 +214,7 @@ fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize) -> AiWorkerHandle 
 
     std::thread::spawn(move || {
         while let Ok(obs) = obs_rx.recv() {
-            let num_snakes = (obs.len() - total_preys * 64) / 66;
+            let num_snakes = (obs.len() - total_preys * PREY_OBS_SIZE) / SNAKE_OBS_SIZE;
 
             let mut payload = vec![0u8; obs.len() * 4];
             for (i, &val) in obs.iter().enumerate() {
@@ -632,6 +632,10 @@ fn game_tick(
                     .map(|&a| a as usize)
                     .collect();
                 engine.0.step(1.0, &prey_actions);
+                // The engine no longer respawns eaten prey inside `step()`
+                // (the trainer captures their terminal observation first); the
+                // visualizer just respawns them immediately every tick.
+                engine.0.respawn_dead_preys();
                 worker.awaiting = false;
             }
             Err(TryRecvError::Empty) => return, // not ready; keep rendering, retry next tick
@@ -644,6 +648,7 @@ fn game_tick(
         let num_preys = engine.0.preys.len();
         let prey_actions = vec![0; num_preys];
         engine.0.step(1.0, &prey_actions);
+        engine.0.respawn_dead_preys();
     }
 
     // The engine no longer ends the game itself on death (it respawns dead

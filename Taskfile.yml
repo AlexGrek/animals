@@ -23,12 +23,28 @@ tasks:
       - PYTHONPATH=src uv run python -m learner.test {{.CLI_ARGS}}
 
   train:
-    desc: "Train the python ML model. Usage: task train STEPS=500000"
+    desc: "Train the snake ML model. Usage: task train STEPS=500000"
     dir: learner
     vars:
       STEPS: '{{default "100000" .STEPS}}'
     cmds:
       - PYTHONPATH=src uv run python -m learner.main --steps {{.STEPS}}
+
+  train-prey:
+    desc: "Train the prey ML model against a frozen snake model. Usage: task train-prey STEPS=1000000"
+    dir: learner
+    vars:
+      STEPS: '{{default "1000000" .STEPS}}'
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.train_prey --steps {{.STEPS}}
+
+  train-amphibia:
+    desc: "Train the amphibia ML model against a frozen snake model. Usage: task train-amphibia STEPS=1000000"
+    dir: learner
+    vars:
+      STEPS: '{{default "1000000" .STEPS}}'
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.train_amphibia --steps {{.STEPS}}
 
   build-sim:
     desc: Build the PyO3 rust code and install into learner venv
