@@ -1,14 +1,25 @@
 use bevy::prelude::*;
 use bevy::window::PresentMode;
-use animals_engine::{Direction, GameState, RelativeAction, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
+use bevy::input::mouse::MouseWheel;
+use animals_engine::{GameState, RelativeAction, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
 use animals_engine::species::Species;
 use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-const GRID_WIDTH: i32 = 100;
-const GRID_HEIGHT: i32 = 100;
+const GRID_WIDTH: i32 = 400;
+const GRID_HEIGHT: i32 = 400;
 const TILE_SIZE: f32 = 6.0;
+/// Camera pan speed in world units/sec at zoom scale 1.0 (scaled by the
+/// current projection scale so panning feels constant on screen at any zoom).
+const PAN_SPEED: f32 = 500.0;
+/// Multiplicative zoom step applied per "notch" of mouse-wheel scroll.
+const ZOOM_STEP: f32 = 1.1;
+const MIN_ZOOM: f32 = 0.2;
+const MAX_ZOOM: f32 = 8.0;
+/// Initial orthographic scale so a good chunk of the 400x400 field is framed
+/// on load (field is 2400x2400 world units, window is 800x800).
+const INITIAL_ZOOM: f32 = 4.0;
 
 #[derive(Resource)]
 struct GameEngine(pub GameState);
@@ -29,6 +40,26 @@ struct AiWorkerHandle {
 
 #[derive(Resource, Default)]
 struct AiWorker(Option<AiWorkerHandle>);
+
+/// Snapshot of every actor's position as of the START of the most recent
+/// `step()` call, i.e. where it was a moment before the current tick's
+/// positions. Used by `render_sync` to give each sprite an `Interp` so it can
+/// glide from its previous position to its new one over the following frames
+/// instead of teleporting on every tick.
+#[derive(Resource, Default)]
+struct PrevPositions {
+    snake_bodies: Vec<Vec<(i32, i32)>>,
+    prey_pos: Vec<(f32, f32)>,
+}
+
+/// Marks a sprite that should be smoothly interpolated between two world
+/// positions over the course of the current tick interval, driven by
+/// `apply_interpolation` every frame using `TickTimer`'s fraction-elapsed.
+#[derive(Component)]
+struct Interp {
+    from: Vec3,
+    to: Vec3,
+}
 
 /// Set whenever the game state changes so `render_sync` only rebuilds sprites
 /// on ticks that actually moved the game, instead of every frame.
@@ -223,15 +254,18 @@ fn main() {
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
         .insert_resource(AppStatus::Running)
+        .insert_resource(PrevPositions::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
                 keyboard_input,
+                camera_control,
                 poll_ai_connection,
                 game_tick,
                 update_status_text,
                 render_sync,
+                apply_interpolation,
             )
                 .chain(),
         )
@@ -304,18 +338,12 @@ fn model_display_name(path: &str) -> String {
 
 /// Builds one label per snake describing who controls it. In `--ai` mode this
 /// mirrors the model-to-snake assignment in `learner/play.py` (1 model =
-/// replicated to every snake, otherwise one model per snake in order); in
-/// manual mode snakes 0 and 1 are the two keyboard players and the rest are
-/// uncontrolled.
+/// replicated to every snake, otherwise one model per snake in order); outside
+/// `--ai` mode there is no manual snake control anymore (keyboard/mouse only
+/// pan and zoom the camera), so every snake is uncontrolled.
 fn controller_labels(args: &[String], num_snakes: usize, is_ai: bool) -> Vec<String> {
     if !is_ai {
-        return (0..num_snakes)
-            .map(|i| match i {
-                0 => "Keyboard (Arrow keys)".to_string(),
-                1 => "Keyboard (WASD)".to_string(),
-                _ => "No input".to_string(),
-            })
-            .collect();
+        return (0..num_snakes).map(|_| "No input".to_string()).collect();
     }
 
     let mut model_paths: Vec<String> = Vec::new();
@@ -349,8 +377,17 @@ fn setup(
     engine: Res<GameEngine>,
     mut status: ResMut<AppStatus>,
 ) {
-    commands.spawn(Camera2d);
-    
+    // Start zoomed out so a good chunk of the (now much larger) field is
+    // framed on load; the field is centered on the origin so the default
+    // transform needs no offset. `camera_control` handles pan/zoom from here.
+    commands.spawn((
+        Camera2d,
+        Projection::Orthographic(OrthographicProjection {
+            scale: INITIAL_ZOOM,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+
     spawn_map(&mut commands, &engine.0);
 
     let args: Vec<String> = std::env::args().collect();
@@ -371,7 +408,11 @@ fn setup(
         })
         .with_children(|parent| {
             parent.spawn((
-                Text::new(if is_ai { "AI Match" } else { "Manual Play" }),
+                Text::new(if is_ai {
+                    "AI Match"
+                } else {
+                    "Camera: WASD/Arrows pan, mouse wheel zoom"
+                }),
                 TextFont { font_size: 20.0, ..default() },
                 TextColor(Color::WHITE),
             ));
@@ -569,31 +610,6 @@ fn keyboard_input(
     mut status: ResMut<AppStatus>,
     ai_server: Option<Res<AiServerProcess>>,
 ) {
-    // Only handles first 2 snakes manually for testing
-    if engine.0.snakes.len() > 0 {
-        if keyboard_input.just_pressed(KeyCode::ArrowUp) {
-            engine.0.set_direction(0, Direction::Up);
-        } else if keyboard_input.just_pressed(KeyCode::ArrowDown) {
-            engine.0.set_direction(0, Direction::Down);
-        } else if keyboard_input.just_pressed(KeyCode::ArrowLeft) {
-            engine.0.set_direction(0, Direction::Left);
-        } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
-            engine.0.set_direction(0, Direction::Right);
-        }
-    }
-
-    if engine.0.snakes.len() > 1 {
-        if keyboard_input.just_pressed(KeyCode::KeyW) {
-            engine.0.set_direction(1, Direction::Up);
-        } else if keyboard_input.just_pressed(KeyCode::KeyS) {
-            engine.0.set_direction(1, Direction::Down);
-        } else if keyboard_input.just_pressed(KeyCode::KeyA) {
-            engine.0.set_direction(1, Direction::Left);
-        } else if keyboard_input.just_pressed(KeyCode::KeyD) {
-            engine.0.set_direction(1, Direction::Right);
-        }
-    }
-
     if keyboard_input.just_pressed(KeyCode::Space) {
         // Restart the game — works whether it's still running, over, or the
         // AI server failed.
@@ -629,6 +645,51 @@ fn keyboard_input(
     }
 }
 
+/// Pans and zooms the camera every frame. WASD/Arrow keys pan (scaled by the
+/// current zoom so it feels constant on screen at any zoom level); the mouse
+/// wheel zooms in/out by adjusting the orthographic projection's `scale`.
+fn camera_control(
+    time: Res<Time>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut scroll_events: MessageReader<MouseWheel>,
+    mut camera_query: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+) {
+    let Ok((mut transform, mut projection)) = camera_query.single_mut() else {
+        return;
+    };
+    let Projection::Orthographic(ortho) = &mut *projection else {
+        return;
+    };
+
+    let mut pan = Vec2::ZERO;
+    if keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp) {
+        pan.y += 1.0;
+    }
+    if keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown) {
+        pan.y -= 1.0;
+    }
+    if keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft) {
+        pan.x -= 1.0;
+    }
+    if keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight) {
+        pan.x += 1.0;
+    }
+    if pan != Vec2::ZERO {
+        let delta = pan.normalize() * PAN_SPEED * ortho.scale * time.delta_secs();
+        transform.translation.x += delta.x;
+        transform.translation.y += delta.y;
+    }
+
+    for ev in scroll_events.read() {
+        // Scrolling up (positive y) zooms in, i.e. shrinks the scale.
+        if ev.y > 0.0 {
+            ortho.scale = (ortho.scale / ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        } else if ev.y < 0.0 {
+            ortho.scale = (ortho.scale * ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        }
+    }
+}
+
 fn game_tick(
     time: Res<Time>,
     mut timer: ResMut<TickTimer>,
@@ -636,6 +697,7 @@ fn game_tick(
     mut ai_worker: ResMut<AiWorker>,
     status: Res<AppStatus>,
     mut dirty: ResMut<RenderDirty>,
+    mut prev: ResMut<PrevPositions>,
 ) {
     // Don't advance the game while still loading or after a fatal error.
     if !matches!(*status, AppStatus::Running) {
@@ -684,6 +746,10 @@ fn game_tick(
                     .iter()
                     .map(|&a| a as usize)
                     .collect();
+                // Snapshot pre-step positions for `render_sync`'s Interp setup,
+                // so sprites can glide from here to their new tick position.
+                prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
+                prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
                 engine.0.step(1.0, &prey_actions);
                 // The engine no longer respawns eaten prey inside `step()`
                 // (the trainer captures their terminal observation first); the
@@ -700,6 +766,8 @@ fn game_tick(
     } else {
         let num_preys = engine.0.preys.len();
         let prey_actions = vec![0; num_preys];
+        prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
+        prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
         engine.0.step(1.0, &prey_actions);
         engine.0.respawn_dead_preys();
     }
@@ -755,6 +823,7 @@ fn render_sync(
     segment_query: Query<Entity, With<SnakeSegment>>,
     apple_query: Query<Entity, With<Apple>>,
     mut dirty: ResMut<RenderDirty>,
+    prev: Res<PrevPositions>,
 ) {
     // Only rebuild sprites on frames where the game state actually changed
     // (a logic tick or a restart); the sprites persist between those frames,
@@ -776,25 +845,38 @@ fn render_sync(
     let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
 
     // 2. Draw Preys
-    for prey in &engine.0.preys {
+    for (p_idx, prey) in engine.0.preys.iter().enumerate() {
         if !prey.is_dead {
             let prey_pos = prey.pos;
             let color = match prey.species {
                 Species::Amphibia => Color::srgb(0.0, 1.0, 1.0), // Cyan for Amphibia
                 _ => Color::srgb(1.0, 0.5, 0.0), // Orange for Prey
             };
+            let to = Vec3::new(
+                prey_pos.0 * TILE_SIZE - offset_x,
+                prey_pos.1 * TILE_SIZE - offset_y,
+                0.0,
+            );
+            // Interpolate from the previous tick's position, unless the prey
+            // teleported this tick (died and respawned elsewhere) or there's
+            // no previous position to speak of — then snap instead of
+            // streaking a sprite across the whole map.
+            let died_this_tick = engine.0.prey_died_this_tick.get(p_idx).copied().unwrap_or(false);
+            let from = prev
+                .prey_pos
+                .get(p_idx)
+                .map(|p| Vec3::new(p.0 * TILE_SIZE - offset_x, p.1 * TILE_SIZE - offset_y, 0.0))
+                .filter(|from| !died_this_tick && from.distance(to) <= 2.0 * TILE_SIZE)
+                .unwrap_or(to);
             commands.spawn((
                 Sprite {
                     color,
                     custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
                     ..default()
                 },
-                Transform::from_xyz(
-                    prey_pos.0 * TILE_SIZE - offset_x,
-                    prey_pos.1 * TILE_SIZE - offset_y,
-                    0.0,
-                ),
+                Transform::from_translation(from),
                 Apple,
+                Interp { from, to },
             ));
         }
     }
@@ -815,19 +897,44 @@ fn render_sync(
                 Color::hsl(hue, 1.0, 0.3)
             };
 
+            let to = Vec3::new(
+                pos.0 as f32 * TILE_SIZE - offset_x,
+                pos.1 as f32 * TILE_SIZE - offset_y,
+                0.0,
+            );
+            // Index-aligned with the previous tick's body: a forward-moving
+            // segment slides smoothly from its old cell to its new one. A
+            // freshly grown tail segment (no previous entry at this index)
+            // has no "from" to speak of, so it just appears in place.
+            let from = prev
+                .snake_bodies
+                .get(s_idx)
+                .and_then(|body| body.get(i))
+                .map(|p| Vec3::new(p.0 as f32 * TILE_SIZE - offset_x, p.1 as f32 * TILE_SIZE - offset_y, 0.0))
+                .unwrap_or(to);
+
             commands.spawn((
                 Sprite {
                     color,
                     custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
                     ..default()
                 },
-                Transform::from_xyz(
-                    pos.0 as f32 * TILE_SIZE - offset_x,
-                    pos.1 as f32 * TILE_SIZE - offset_y,
-                    0.0,
-                ),
+                Transform::from_translation(from),
                 SnakeSegment,
+                Interp { from, to },
             ));
         }
+    }
+}
+
+/// Runs every frame (unlike `render_sync`, which only rebuilds sprites on
+/// logic ticks) to glide each `Interp`-tagged sprite from its previous tick's
+/// position to its current one, driven by how far we are into the current
+/// tick interval. This is purely visual — the engine itself only ever holds
+/// discrete per-tick positions.
+fn apply_interpolation(timer: Res<TickTimer>, mut query: Query<(&Interp, &mut Transform)>) {
+    let a = timer.0.fraction().clamp(0.0, 1.0);
+    for (interp, mut transform) in &mut query {
+        transform.translation = interp.from.lerp(interp.to, a);
     }
 }

@@ -93,12 +93,35 @@ impl GameState {
         true
     }
 
+    /// Whether `pos` lies within the grid bounds.
+    fn in_bounds(&self, pos: (i32, i32)) -> bool {
+        pos.0 >= 0 && pos.0 < self.grid_width && pos.1 >= 0 && pos.1 < self.grid_height
+    }
+
+    /// The 3 body cells (head, head-v, head-2v) a snake would occupy if
+    /// spawned at `head` facing `direction`. Mirrors `SnakeState::new`.
+    fn spawn_body_cells(head: (i32, i32), direction: Direction) -> [(i32, i32); 3] {
+        let v = direction.to_vector();
+        [head, (head.0 - v.0, head.1 - v.1), (head.0 - 2 * v.0, head.1 - 2 * v.1)]
+    }
+
+    /// Whether the full 3-cell body a snake would spawn with at `head` facing
+    /// `direction` is entirely valid: every cell in-bounds and free per
+    /// `is_cell_free` (not Rock/Water terrain, no overlapping snake body, no
+    /// overlapping alive prey). `is_cell_free` already treats out-of-bounds
+    /// terrain as Rock, but we still guard bounds explicitly to be safe.
+    fn is_spawn_body_free(&self, head: (i32, i32), direction: Direction, exclude: Option<usize>) -> bool {
+        Self::spawn_body_cells(head, direction)
+            .iter()
+            .all(|&cell| self.in_bounds(cell) && self.is_cell_free(cell, exclude))
+    }
+
     /// Picks a spawn position for `index`: prefer the deterministic evenly
-    /// spaced column used at game start; if occupied, fall back to a random
-    /// free cell.
+    /// spaced column used at game start; if the full 3-cell body doesn't fit
+    /// there, fall back to a random free cell whose full 3-cell body fits.
     fn spawn_position(&self, index: usize) -> ((i32, i32), Direction) {
         let (preferred, direction) = self.initial_spawn(index, self.snakes.len());
-        if self.is_cell_free(preferred, Some(index)) {
+        if self.is_spawn_body_free(preferred, direction, Some(index)) {
             return (preferred, direction);
         }
 
@@ -107,7 +130,7 @@ impl GameState {
             let x = rng.gen_range(0..self.grid_width);
             let y = rng.gen_range(0..self.grid_height);
             let pos = (x, y);
-            if self.is_cell_free(pos, Some(index)) {
+            if self.is_spawn_body_free(pos, direction, Some(index)) {
                 return (pos, direction);
             }
         }

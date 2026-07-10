@@ -17,9 +17,16 @@ pub struct SnakeState {
 
 impl SnakeState {
     pub fn new(start_pos: (i32, i32), direction: Direction) -> Self {
+        let v = direction.to_vector();
+        let head = start_pos;
+        let body = vec![
+            head,
+            (head.0 - v.0, head.1 - v.1),
+            (head.0 - 2 * v.0, head.1 - 2 * v.1),
+        ];
         Self {
             head_pos: (start_pos.0 as f32, start_pos.1 as f32),
-            body: vec![start_pos],
+            body,
             direction,
             is_dead: false,
             score: 0,

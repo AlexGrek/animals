@@ -45,8 +45,13 @@ impl Map {
     fn generate(&mut self) {
         let mut rng = rand::thread_rng();
 
+        // Scale feature COUNTS (not radii) by field area relative to the
+        // 100x100 training baseline, so a larger field isn't mostly empty
+        // grass. At 100x100 this is exactly 1.0, so counts are unchanged.
+        let area_scale = ((self.width * self.height) as f32 / (100.0 * 100.0)).max(1.0);
+
         // 1. Generate Roads (Large random-shaped objects)
-        let num_roads = rng.gen_range(2..=5);
+        let num_roads = (rng.gen_range(2..=5) as f32 * area_scale).round() as i32;
         for _ in 0..num_roads {
             let mut px = rng.gen_range(0..self.width) as f32;
             let mut py = rng.gen_range(0..self.height) as f32;
@@ -63,7 +68,7 @@ impl Map {
         }
 
         // 2. Generate Water ponds (small ponds, diameter 6-20 -> radius 3-10)
-        let num_ponds = rng.gen_range(4..=10);
+        let num_ponds = (rng.gen_range(4..=10) as f32 * area_scale).round() as i32;
         for _ in 0..num_ponds {
             let cx = rng.gen_range(0..self.width);
             let cy = rng.gen_range(0..self.height);
@@ -72,7 +77,7 @@ impl Map {
         }
 
         // 3. Generate Rocks (circular-like, radius 3-16)
-        let num_rocks = rng.gen_range(5..=15);
+        let num_rocks = (rng.gen_range(5..=15) as f32 * area_scale).round() as i32;
         for _ in 0..num_rocks {
             let cx = rng.gen_range(0..self.width);
             let cy = rng.gen_range(0..self.height);
