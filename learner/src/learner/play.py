@@ -34,31 +34,36 @@ def main():
         server.listen(1)
         logger.info(f"Listening for Bevy connection on 127.0.0.1:{args.port}...")
         
+        def recvall(sock, n):
+            data = bytearray()
+            while len(data) < n:
+                packet = sock.recv(n - len(data))
+                if not packet:
+                    return None
+                data.extend(packet)
+            return data
+
         while True:
             conn, addr = server.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             logger.info(f"Bevy connected from {addr}!")
             
             try:
                 while True:
-                    # Expect exactly 32 bytes (8 floats, little endian)
-                    data = conn.recv(32)
+                    # Expect exactly 528 bytes (132 floats, little endian) for 2 snakes
+                    data = recvall(conn, 528)
                     if not data:
                         break # Connection closed
                         
-                    if len(data) != 32:
-                        logger.warning(f"Received incomplete packet ({len(data)} bytes). Closing connection.")
-                        break
-
-                    # Unpack 8 floats
-                    unpacked = struct.unpack('<8f', data)
-                    obs = np.array(unpacked, dtype=np.float32)
+                    # Unpack 132 floats
+                    unpacked = struct.unpack('<132f', data)
+                    obs = np.array(unpacked, dtype=np.float32).reshape(2, 66)
                     
-                    # Predict action
-                    action, _ = model.predict(obs, deterministic=True)
-                    action_int = int(action)
+                    # Predict actions for both snakes
+                    actions, _ = model.predict(obs, deterministic=True)
                     
-                    # Pack 1 integer (4 bytes, little endian)
-                    response = struct.pack('<i', action_int)
+                    # Pack 2 integers (8 bytes, little endian)
+                    response = struct.pack('<2i', int(actions[0]), int(actions[1]))
                     conn.sendall(response)
                     
             except ConnectionResetError:

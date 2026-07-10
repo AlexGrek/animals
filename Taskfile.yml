@@ -12,15 +12,9 @@ tasks:
       - cargo run -p animals_game
 
   play-ai:
-    desc: Watch the AI play the Snake game using the trained model (Ensure run-ai-server is running!)
+    desc: Watch the AI play the Snake game using the trained model (Rust will spawn the Python server automatically)
     cmds:
       - cargo run -p animals_game -- --ai
-
-  run-ai-server:
-    desc: Start the Python TCP inference server
-    dir: learner
-    cmds:
-      - PYTHONPATH=src uv run python -m learner.play
 
   train:
     desc: "Train the python ML model. Usage: task train STEPS=500000"
@@ -37,10 +31,10 @@ tasks:
       - PYTHONPATH=src uv run python -m learner.export_weights
 
   build-sim:
-    desc: Build the PyO3 module for the simulation
-    dir: animals_simulation
+    desc: Build the PyO3 rust code and install into learner venv
+    dir: learner
     cmds:
-      - PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop
+      - PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv pip install -e ../animals_simulation
 
   check:
     desc: Check the Rust workspace compilation

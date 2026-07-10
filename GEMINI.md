@@ -2,6 +2,10 @@
 
 This project is a multi-language workspace combining a Rust-based game engine/simulation with a Python-based machine learning (Reinforcement Learning) client.
 
+For detailed architecture logic, refer to:
+- [Architecture Details](file:///Users/vedmedik/dev/animals/docs/architecture.md)
+- [Reinforcement Learning Specs](file:///Users/vedmedik/dev/animals/docs/learning.md)
+
 ```mermaid
 graph TD
     subgraph Rust Workspace
@@ -52,12 +56,12 @@ The Python environment creates an instance of the Rust `Simulation` object and c
 import animals_simulation
 
 sim = animals_simulation.Simulation()
-initial_observation = sim.reset()
+obs0, obs1 = sim.reset()
 ```
 
 ### Action / Step
-For each simulation step, the Python environment calls the `step(action)` method on the Rust object:
+For each simulation step, the Python environment calls the `step(action0, action1)` method on the Rust object:
 ```python
-observation, reward, terminated, truncated = sim.step(action)
+(o0, o1), (r0, r1), (d0, d1) = sim.step(action0, action1)
 ```
 This synchronously executes the physics/logic in Rust and returns the next frame's data back to Python.

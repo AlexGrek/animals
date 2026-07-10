@@ -1,5 +1,4 @@
 use rand::Rng;
-use serde::Deserialize;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
@@ -73,34 +72,62 @@ impl RelativeAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct GameState {
-    pub snake_body: Vec<(i32, i32)>,
-    pub apple_pos: (i32, i32),
+pub struct SnakeState {
+    pub body: Vec<(i32, i32)>,
     pub direction: Direction,
+    pub is_dead: bool,
+    pub score: u32,
+    pub kills: u32,
+    pub death_by_wall: bool,
+    pub death_by_self: bool,
+    pub death_by_opponent: bool,
+}
+
+impl SnakeState {
+    pub fn new(start_pos: (i32, i32), direction: Direction) -> Self {
+        Self {
+            body: vec![start_pos],
+            direction,
+            is_dead: false,
+            score: 0,
+            kills: 0,
+            death_by_wall: false,
+            death_by_self: false,
+            death_by_opponent: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GameState {
+    pub snakes: Vec<SnakeState>,
+    pub apple_pos: (i32, i32),
     pub grid_width: i32,
     pub grid_height: i32,
-    pub score: u32,
     pub game_over: bool,
 }
 
 impl GameState {
     pub fn new(width: i32, height: i32) -> Self {
         let mut state = Self {
-            snake_body: vec![(width / 2, height / 2)],
+            snakes: vec![
+                SnakeState::new((10, height / 2), Direction::Right),
+                SnakeState::new((width - 10, height / 2), Direction::Left),
+            ],
             apple_pos: (0, 0),
-            direction: Direction::Up,
             grid_width: width,
             grid_height: height,
-            score: 0,
             game_over: false,
         };
         state.spawn_apple();
         state
     }
 
-    pub fn set_direction(&mut self, new_dir: Direction) {
-        if self.direction.opposite() != new_dir {
-            self.direction = new_dir;
+    pub fn set_direction(&mut self, snake_index: usize, new_dir: Direction) {
+        if let Some(snake) = self.snakes.get_mut(snake_index) {
+            if snake.direction.opposite() != new_dir {
+                snake.direction = new_dir;
+            }
         }
     }
 
@@ -109,38 +136,77 @@ impl GameState {
             return;
         }
 
-        let head = self.snake_body[0];
-        let new_head = match self.direction {
-            Direction::Up => (head.0, head.1 + 1),
-            Direction::Down => (head.0, head.1 - 1),
-            Direction::Left => (head.0 - 1, head.1),
-            Direction::Right => (head.0 + 1, head.1),
-        };
-
-        // Check wall collision
-        if new_head.0 < 0
-            || new_head.0 >= self.grid_width
-            || new_head.1 < 0
-            || new_head.1 >= self.grid_height
-        {
-            self.game_over = true;
-            return;
+        let mut new_heads = Vec::new();
+        for snake in &self.snakes {
+            if snake.is_dead {
+                new_heads.push(snake.body[0]);
+                continue;
+            }
+            let head = snake.body[0];
+            let new_head = match snake.direction {
+                Direction::Up => (head.0, head.1 + 1),
+                Direction::Down => (head.0, head.1 - 1),
+                Direction::Left => (head.0 - 1, head.1),
+                Direction::Right => (head.0 + 1, head.1),
+            };
+            new_heads.push(new_head);
         }
 
-        // Check self collision
-        if self.snake_body.contains(&new_head) {
-            self.game_over = true;
-            return;
+        // Check collisions
+        for i in 0..self.snakes.len() {
+            if self.snakes[i].is_dead { continue; }
+            let head = new_heads[i];
+            
+            // Wall collision
+            if head.0 < 0 || head.0 >= self.grid_width || head.1 < 0 || head.1 >= self.grid_height {
+                self.snakes[i].is_dead = true;
+                self.snakes[i].death_by_wall = true;
+                self.game_over = true;
+                continue;
+            }
+
+            // Head-to-head collision
+            let mut head_collision = false;
+            for j in 0..self.snakes.len() {
+                if i != j && !self.snakes[j].is_dead && head == new_heads[j] {
+                    self.snakes[i].is_dead = true;
+                    self.snakes[i].death_by_opponent = true;
+                    head_collision = true;
+                    self.game_over = true;
+                    break;
+                }
+            }
+            if head_collision { continue; }
+
+            // Body collision
+            for j in 0..self.snakes.len() {
+                let snake_j = &self.snakes[j];
+                if snake_j.body.contains(&head) {
+                    self.snakes[i].is_dead = true;
+                    self.game_over = true;
+                    if i == j {
+                        self.snakes[i].death_by_self = true;
+                    } else {
+                        self.snakes[i].death_by_opponent = true;
+                        self.snakes[j].kills += 1;
+                    }
+                    break;
+                }
+            }
         }
 
-        self.snake_body.insert(0, new_head);
+        // Move and eat apples
+        for i in 0..self.snakes.len() {
+            if self.snakes[i].is_dead { continue; }
+            let head = new_heads[i];
+            self.snakes[i].body.insert(0, head);
 
-        // Check apple eating
-        if new_head == self.apple_pos {
-            self.score += 1;
-            self.spawn_apple();
-        } else {
-            self.snake_body.pop();
+            if head == self.apple_pos {
+                self.snakes[i].score += 1;
+                self.spawn_apple();
+            } else {
+                self.snakes[i].body.pop();
+            }
         }
     }
 
@@ -150,71 +216,67 @@ impl GameState {
             let x = rng.gen_range(0..self.grid_width);
             let y = rng.gen_range(0..self.grid_height);
             let pos = (x, y);
-            if !self.snake_body.contains(&pos) {
+            let mut free = true;
+            for s in &self.snakes {
+                if s.body.contains(&pos) {
+                    free = false;
+                    break;
+                }
+            }
+            if free {
                 self.apple_pos = pos;
                 break;
             }
         }
     }
 
-    pub fn is_impassable(&self, pos: (i32, i32)) -> bool {
-        pos.0 < 0
-            || pos.0 >= self.grid_width
-            || pos.1 < 0
-            || pos.1 >= self.grid_height
-            || self.snake_body.contains(&pos)
-    }
+    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 66] {
+        let mut obs = [0.0; 66];
+        let snake = &self.snakes[snake_index];
+        if snake.body.is_empty() { return obs; }
 
-    /// Exports the 8-dimensional relative observation vector for machine learning.
-    pub fn get_relative_observation(&self) -> [f32; 8] {
-        if self.snake_body.is_empty() {
-            return [0.0; 8];
-        }
-
-        let head = self.snake_body[0];
-        let dir = self.direction;
-
-        // 1. Directions relative to snake heading
+        let head = snake.body[0];
+        let dir = snake.direction;
         let vec_straight = dir.to_vector();
-        let vec_left = dir.turn_left().to_vector();
         let vec_right = dir.turn_right().to_vector();
 
-        // Cells directly relative to the head
-        let cell_straight = (head.0 + vec_straight.0, head.1 + vec_straight.1);
-        let cell_left = (head.0 + vec_left.0, head.1 + vec_left.1);
-        let cell_right = (head.0 + vec_right.0, head.1 + vec_right.1);
+        let mut idx = 0;
+        for f in -3..=4 {
+            for r in -3..=4 {
+                let cx = head.0 + f * vec_straight.0 + r * vec_right.0;
+                let cy = head.1 + f * vec_straight.1 + r * vec_right.1;
+                let cell = (cx, cy);
 
-        // Danger observations
-        let danger_straight = if self.is_impassable(cell_straight) { 1.0 } else { 0.0 };
-        let danger_left = if self.is_impassable(cell_left) { 1.0 } else { 0.0 };
-        let danger_right = if self.is_impassable(cell_right) { 1.0 } else { 0.0 };
+                if cell == self.apple_pos {
+                    obs[idx] = 1.0;
+                } else if cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height {
+                    obs[idx] = -1.0;
+                } else if snake.body.contains(&cell) {
+                    obs[idx] = -1.0;
+                } else {
+                    let mut is_enemy = false;
+                    for j in 0..self.snakes.len() {
+                        if snake_index != j && self.snakes[j].body.contains(&cell) {
+                            is_enemy = true;
+                            break;
+                        }
+                    }
+                    if is_enemy {
+                        obs[idx] = -0.5;
+                    } else {
+                        obs[idx] = 0.0;
+                    }
+                }
+                idx += 1;
+            }
+        }
 
-        // 2. Food relative direction components
         let dx = self.apple_pos.0 - head.0;
         let dy = self.apple_pos.1 - head.1;
+        let max_dim = self.grid_width.max(self.grid_height) as f32;
+        obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
+        obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
 
-        // Project food vector onto heading and left/right vectors
-        let forward_comp = dx * vec_straight.0 + dy * vec_straight.1;
-        let left_comp = dx * vec_left.0 + dy * vec_left.1;
-
-        let food_ahead = if forward_comp > 0 { 1.0 } else { 0.0 };
-        let food_behind = if forward_comp < 0 { 1.0 } else { 0.0 };
-        let food_left = if left_comp > 0 { 1.0 } else { 0.0 };
-        let food_right = if left_comp < 0 { 1.0 } else { 0.0 };
-
-        // 3. Distance to food
-        let distance = ((dx * dx + dy * dy) as f32).sqrt();
-        let normalized_distance = 1.0 / (distance + 1.0);
-
-        [
-            danger_straight,
-            danger_left,
-            danger_right,
-            food_ahead,
-            food_behind,
-            food_left,
-            food_right,
-            normalized_distance,
-        ]
+        obs
     }
 }
