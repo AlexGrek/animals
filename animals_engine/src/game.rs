@@ -360,8 +360,10 @@ impl GameState {
     /// Snake observation (`SNAKE_OBS_SIZE` floats):
     /// - `[0..64)`  — 8x8 grid in the snake's rotated frame (4 cells ahead,
     ///   3 behind, 4 right, 3 left). Cell encoding: prey `1.0`; wall/rock/own
-    ///   body `-1.0`; enemy head `-0.8`; enemy body `-0.5`; else passable
-    ///   terrain `Species::Snake.speed_on(terrain) * 0.5`.
+    ///   body `-1.0`; **alive** enemy head `-0.8`; any enemy body cell
+    ///   (including a dead snake's frozen corpse — still a solid obstacle in
+    ///   `step()`'s collision check) `-0.5`; else passable terrain
+    ///   `Species::Snake.speed_on(terrain) * 0.5`.
     /// - `[64]`/`[65]` — unit direction to the nearest alive prey (forward /
     ///   right components), zero when no prey exists.
     /// - `[66]` — distance to that prey normalized by the larger grid
@@ -380,13 +382,23 @@ impl GameState {
 
         // Build occupancy sets once (O(total_length)), then each of the 64 grid
         // cells is an O(1) lookup instead of a linear scan over every body Vec.
+        //
+        // Dead snakes are NOT skipped here: a corpse's body stays on the grid
+        // as a solid obstacle (the Bevy visualizer never respawns snakes; it
+        // freezes them in place until the whole match ends), and the collision
+        // check in `step()` doesn't exempt dead bodies either — so a corpse
+        // that's invisible in this observation is a wall the snake can't see
+        // and will walk straight into. Only the "-0.8 head" danger marker is
+        // alive-only, since a dead snake can't trigger a head-to-head kill.
         let own_body: HashSet<(i32, i32)> = snake.body.iter().copied().collect();
         let mut enemy_bodies: HashSet<(i32, i32)> = HashSet::new();
         let mut enemy_heads: HashSet<(i32, i32)> = HashSet::new();
         for (j, s) in self.snakes.iter().enumerate() {
-            if j == snake_index || s.is_dead { continue; }
-            if let Some(&h) = s.body.first() {
-                enemy_heads.insert(h);
+            if j == snake_index { continue; }
+            if !s.is_dead {
+                if let Some(&h) = s.body.first() {
+                    enemy_heads.insert(h);
+                }
             }
             enemy_bodies.extend(s.body.iter().copied());
         }
@@ -525,5 +537,36 @@ impl GameState {
         }
 
         obs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Bevy visualizer never calls `respawn_dead()`: a dead snake's body
+    /// stays frozen on the grid as a corpse until the whole match ends. A
+    /// living snake's observation must still mark that corpse as an obstacle
+    /// (`step()`'s collision check doesn't exempt dead bodies either), or the
+    /// snake walks straight into a wall it can't see. Regression test for a
+    /// bug where the observation builder skipped dead snakes entirely.
+    #[test]
+    fn dead_snake_corpse_is_visible_as_obstacle() {
+        let mut state = GameState::new(20, 20, 2, 0, 0);
+
+        // Snake 1 (index 1) dies via a wall collision, leaving a body behind.
+        state.snakes[1].body = vec![(5, 5), (5, 4), (5, 3)];
+        state.snakes[1].is_dead = true;
+
+        // Position snake 0 so the corpse falls inside its forward-facing patch.
+        state.snakes[0].body = vec![(5, 8)];
+        state.snakes[0].head_pos = (5.0, 8.0);
+        state.snakes[0].direction = Direction::Down; // facing toward (5,5)
+
+        let obs = state.get_relative_observation(0);
+
+        // (5,5) is 3 cells straight ahead of (5,8) facing Down -> f=3, r=0 -> idx (3+3)*8+(0+3)=51
+        let idx = ((3 + 3) * 8 + (0 + 3)) as usize;
+        assert_eq!(obs[idx], -0.5, "dead snake's body cell must read as an obstacle, not open terrain");
     }
 }

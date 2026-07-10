@@ -1,0 +1,51 @@
+{
+    "snakes": [
+        {
+            "length": 4,
+            "score": 3,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "death_by_hunger": false,
+            "model": "models/snake_model.zip",
+            "total_apples_eaten": 42,
+            "total_kills": 1,
+            "total_deaths": 9
+        },
+        {
+            "length": 9,
+            "score": 8,
+            "kills": 0,
+            "is_dead": false,
+            "death_by_wall": false,
+            "death_by_self": false,
+            "death_by_opponent": false,
+            "death_by_hunger": false,
+            "model": "models/snake_model.zip",
+            "total_apples_eaten": 33,
+            "total_kills": 1,
+            "total_deaths": 11
+        }
+    ],
+    "prey": [
+        {
+            "model": "models/prey_model.zip",
+            "total_deaths": 19,
+            "ticks_survived": 9981
+        },
+        {
+            "model": "models/prey_model.zip",
+            "total_deaths": 25,
+            "ticks_survived": 9975
+        }
+    ],
+    "amphibia": [
+        {
+            "model": "models/amphibia_model.zip",
+            "total_deaths": 30,
+            "ticks_survived": 9970
+        }
+    ]
+}

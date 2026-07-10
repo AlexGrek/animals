@@ -94,6 +94,59 @@ struct MapTile;
 fn spawn_map(commands: &mut Commands, state: &GameState) {
     let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
     let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+
+    // Spawn play area background (a single large rectangle)
+    commands.spawn((
+        Sprite {
+            color: Color::srgb(0.14, 0.32, 0.16),
+            custom_size: Some(Vec2::new(GRID_WIDTH as f32 * TILE_SIZE, GRID_HEIGHT as f32 * TILE_SIZE)),
+            ..default()
+        },
+        Transform::from_xyz(
+            (GRID_WIDTH as f32 * TILE_SIZE) / 2.0 - offset_x - TILE_SIZE / 2.0,
+            (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0 - offset_y - TILE_SIZE / 2.0,
+            -1.5, // behind all map elements
+        ),
+        MapTile,
+    ));
+
+    // Spawn border wall tiles
+    let border_color = Color::srgb(0.3, 0.3, 0.35);
+    for x in -1..=GRID_WIDTH {
+        for &y in &[-1, GRID_HEIGHT] {
+            commands.spawn((
+                Sprite {
+                    color: border_color,
+                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    x as f32 * TILE_SIZE - offset_x,
+                    y as f32 * TILE_SIZE - offset_y,
+                    -0.5,
+                ),
+                MapTile,
+            ));
+        }
+    }
+    for y in 0..GRID_HEIGHT {
+        for &x in &[-1, GRID_WIDTH] {
+            commands.spawn((
+                Sprite {
+                    color: border_color,
+                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    x as f32 * TILE_SIZE - offset_x,
+                    y as f32 * TILE_SIZE - offset_y,
+                    -0.5,
+                ),
+                MapTile,
+            ));
+        }
+    }
+
     for y in 0..GRID_HEIGHT {
         for x in 0..GRID_WIDTH {
             let terrain = state.map.get_terrain(x, y);
@@ -164,7 +217,7 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_resource(ClearColor(Color::srgb(0.2, 0.6, 0.2)))
+        .insert_resource(ClearColor(Color::srgb(0.09, 0.10, 0.14)))
         .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias)))
         .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
