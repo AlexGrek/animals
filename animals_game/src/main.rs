@@ -1,7 +1,10 @@
 use bevy::prelude::*;
+use bevy::window::PresentMode;
 use animals_engine::snake::{Direction, GameState, RelativeAction};
+use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 const GRID_WIDTH: i32 = 100;
 const GRID_HEIGHT: i32 = 100;
 const TILE_SIZE: f32 = 6.0;
@@ -12,8 +15,24 @@ struct GameEngine(pub GameState);
 #[derive(Resource)]
 struct TickTimer(pub Timer);
 
+/// Handle to the background thread that owns the TCP socket to the Python
+/// inference server. The blocking `write`/`read` round-trip lives on that
+/// thread so it can never stall the render loop; the main thread only does
+/// non-blocking channel sends/receives.
+struct AiWorkerHandle {
+    obs_tx: Sender<Vec<f32>>,
+    act_rx: Receiver<Vec<i32>>,
+    /// True while a request is in flight and we're waiting for its actions.
+    awaiting: bool,
+}
+
+#[derive(Resource, Default)]
+struct AiWorker(Option<AiWorkerHandle>);
+
+/// Set whenever the game state changes so `render_sync` only rebuilds sprites
+/// on ticks that actually moved the game, instead of every frame.
 #[derive(Resource)]
-struct AiConnection(pub Option<TcpStream>);
+struct RenderDirty(bool);
 
 #[derive(Resource)]
 struct AiServerProcess(std::sync::Mutex<std::process::Child>);
@@ -28,11 +47,73 @@ impl Drop for AiServerProcess {
     }
 }
 
+/// High-level state of the app, surfaced to the player as on-screen text.
+#[derive(Resource, Clone, PartialEq)]
+enum AppStatus {
+    /// Still getting ready (spawning / connecting to the AI server). The
+    /// string is the message shown on screen.
+    Loading(String),
+    /// The game is live and ticking.
+    Running,
+    /// Something went wrong; the string is shown on screen and the game stays
+    /// frozen instead of silently exiting.
+    Failed(String),
+}
+
+/// Present only in `--ai` mode while we wait for the Python inference server to
+/// finish loading its models and open its TCP port. Removed once connected.
+#[derive(Resource)]
+struct PendingConnection {
+    port: u16,
+    retry: Timer,
+    elapsed: f32,
+    timeout: f32,
+}
+
+/// The on-screen line that reflects [`AppStatus`] (loading / error messages).
+#[derive(Component)]
+struct StatusText;
+
 #[derive(Component)]
 struct SnakeSegment;
 
 #[derive(Component)]
 struct Apple;
+
+#[derive(Component)]
+struct MapTile;
+
+fn spawn_map(commands: &mut Commands, state: &GameState) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for y in 0..GRID_HEIGHT {
+        for x in 0..GRID_WIDTH {
+            let terrain = state.map.get_terrain(x, y);
+            if terrain == Terrain::Grass {
+                continue;
+            }
+            let color = match terrain {
+                Terrain::Grass => unreachable!(),
+                Terrain::Road => Color::srgb(0.5, 0.4, 0.3),
+                Terrain::Water => Color::srgb(0.2, 0.5, 0.9),
+                Terrain::Rock => Color::srgb(0.4, 0.4, 0.4),
+            };
+            commands.spawn((
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    x as f32 * TILE_SIZE - offset_x,
+                    y as f32 * TILE_SIZE - offset_y,
+                    -1.0,
+                ),
+                MapTile,
+            ));
+        }
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -50,23 +131,185 @@ fn main() {
             primary_window: Some(Window {
                 title: "Snake".into(),
                 resolution: (800, 800).into(),
+                // Vsync: present one frame per vertical blank for a smooth,
+                // tear-free 60fps on a 60Hz display.
+                present_mode: PresentMode::AutoVsync,
                 ..default()
             }),
             ..default()
         }))
+        .insert_resource(ClearColor(Color::srgb(0.2, 0.6, 0.2)))
         .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes)))
         .insert_resource(TickTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
-        .insert_resource(AiConnection(None))
+        .insert_resource(AiWorker(None))
+        .insert_resource(RenderDirty(true))
+        .insert_resource(AppStatus::Running)
         .add_systems(Startup, setup)
-        .add_systems(Update, (keyboard_input, game_tick, render_sync).chain())
+        .add_systems(
+            Update,
+            (
+                keyboard_input,
+                poll_ai_connection,
+                game_tick,
+                update_status_text,
+                render_sync,
+            )
+                .chain(),
+        )
         .run();
 }
 
-fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>, engine: Res<GameEngine>) {
+/// Colour used for a snake's head and its header line, so the two are visually
+/// linked. Matches the hue formula used when drawing bodies in `render_sync`.
+fn snake_color(idx: usize, total: usize) -> Color {
+    let hue = (idx as f32 / total.max(1) as f32) * 360.0;
+    Color::hsl(hue, 1.0, 0.5)
+}
+
+/// Flattens every snake's observation into one `num_snakes * 130` buffer, in the
+/// same layout the Python server expects.
+fn gather_observations(game: &GameState) -> Vec<f32> {
+    let mut obs = Vec::with_capacity(game.snakes.len() * 130);
+    for s in 0..game.snakes.len() {
+        obs.extend_from_slice(&game.get_relative_observation(s));
+    }
+    obs
+}
+
+/// Spawns the background thread that owns `stream` and services inference
+/// requests: it blocks on the socket round-trip (write observations, read
+/// actions) so the render thread never has to.
+fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
+    let (act_tx, act_rx) = crossbeam_channel::unbounded::<Vec<i32>>();
+
+    std::thread::spawn(move || {
+        while let Ok(obs) = obs_rx.recv() {
+            let num_snakes = obs.len() / 130;
+
+            let mut payload = vec![0u8; obs.len() * 4];
+            for (i, &val) in obs.iter().enumerate() {
+                payload[i * 4..i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+            }
+            if stream.write_all(&payload).is_err() {
+                break;
+            }
+
+            let mut action_bytes = vec![0u8; num_snakes * 4];
+            if stream.read_exact(&mut action_bytes).is_err() {
+                break;
+            }
+
+            let mut actions = Vec::with_capacity(num_snakes);
+            for s in 0..num_snakes {
+                let off = s * 4;
+                actions.push(i32::from_le_bytes(action_bytes[off..off + 4].try_into().unwrap()));
+            }
+            if act_tx.send(actions).is_err() {
+                break;
+            }
+        }
+    });
+
+    AiWorkerHandle { obs_tx, act_rx, awaiting: false }
+}
+
+/// Turns a model path like `models/v1.zip` into the short `v1` shown in the UI.
+fn model_display_name(path: &str) -> String {
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    file.strip_suffix(".zip").unwrap_or(file).to_string()
+}
+
+/// Builds one label per snake describing who controls it. In `--ai` mode this
+/// mirrors the model-to-snake assignment in `learner/play.py` (1 model =
+/// replicated to every snake, otherwise one model per snake in order); in
+/// manual mode snakes 0 and 1 are the two keyboard players and the rest are
+/// uncontrolled.
+fn controller_labels(args: &[String], num_snakes: usize, is_ai: bool) -> Vec<String> {
+    if !is_ai {
+        return (0..num_snakes)
+            .map(|i| match i {
+                0 => "Keyboard (Arrow keys)".to_string(),
+                1 => "Keyboard (WASD)".to_string(),
+                _ => "No input".to_string(),
+            })
+            .collect();
+    }
+
+    let mut model_paths: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--model" && i + 1 < args.len() {
+            model_paths.push(args[i + 1].clone());
+            i += 1;
+        }
+        i += 1;
+    }
+
+    // Same defaulting/replication rules as learner/play.py.
+    if model_paths.is_empty() {
+        model_paths.push("models/snake_model".to_string());
+    }
+    if model_paths.len() == 1 {
+        model_paths = vec![model_paths[0].clone(); num_snakes];
+    }
+
+    (0..num_snakes)
+        .map(|i| match model_paths.get(i) {
+            Some(p) => format!("Model: {}", model_display_name(p)),
+            None => "Model: (unassigned)".to_string(),
+        })
+        .collect()
+}
+
+fn setup(
+    mut commands: Commands,
+    engine: Res<GameEngine>,
+    mut status: ResMut<AppStatus>,
+) {
     commands.spawn(Camera2d);
+    
+    spawn_map(&mut commands, &engine.0);
 
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--ai") {
+    let is_ai = args.iter().any(|arg| arg == "--ai");
+    let num_snakes = engine.0.snakes.len();
+    let labels = controller_labels(&args, num_snakes, is_ai);
+
+    // Header: which actor is controlled by what, drawn top-left. Each snake's
+    // line is coloured to match its head so the mapping is unambiguous.
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            left: Val::Px(8.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(2.0),
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(if is_ai { "AI Match" } else { "Manual Play" }),
+                TextFont { font_size: 20.0, ..default() },
+                TextColor(Color::WHITE),
+            ));
+            for (i, label) in labels.iter().enumerate() {
+                parent.spawn((
+                    Text::new(format!("Snake {i}  —  {label}")),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(snake_color(i, num_snakes)),
+                ));
+            }
+            // Status / loading line, updated by `update_status_text`.
+            parent.spawn((
+                Text::new(""),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.9, 0.9, 0.2)),
+                StatusText,
+            ));
+        });
+
+    if is_ai {
         let mut model_paths = Vec::new();
         let mut i = 0;
         while i < args.len() {
@@ -76,15 +319,13 @@ fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>, engine: Res<
             }
             i += 1;
         }
-        
-        let num_snakes = engine.0.snakes.len();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
         println!("Spawning AI inference server on port {} with {} snakes...", port, num_snakes);
-        
+
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let learner_dir = format!("{}/../learner", manifest_dir);
 
@@ -99,31 +340,69 @@ fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>, engine: Res<
         }
 
         let child = cmd.spawn().expect("Failed to spawn Python AI server");
-
         commands.insert_resource(AiServerProcess(std::sync::Mutex::new(child)));
 
-        println!("Waiting for AI server to start...");
-        let mut stream = None;
-        for _ in 0..50 {
-            if let Ok(s) = TcpStream::connect(format!("127.0.0.1:{}", port)) {
-                stream = Some(s);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        // Connect asynchronously across frames (see `poll_ai_connection`) so the
+        // window keeps rendering the loading text instead of freezing while the
+        // Python server imports torch and loads its models.
+        commands.insert_resource(PendingConnection {
+            port,
+            retry: Timer::from_seconds(0.2, TimerMode::Repeating),
+            elapsed: 0.0,
+            timeout: 60.0,
+        });
+        *status = AppStatus::Loading("Starting AI inference server…".to_string());
+    }
+}
 
-        if let Some(s) = stream {
+/// While a [`PendingConnection`] exists, retry connecting to the Python server
+/// once per timer tick without blocking the render loop, updating the loading
+/// message with elapsed time and giving up (→ `Failed`) after the timeout.
+fn poll_ai_connection(
+    time: Res<Time>,
+    pending: Option<ResMut<PendingConnection>>,
+    mut ai_worker: ResMut<AiWorker>,
+    mut status: ResMut<AppStatus>,
+    mut commands: Commands,
+) {
+    let Some(mut pending) = pending else { return };
+
+    pending.elapsed += time.delta_secs();
+    if !pending.retry.tick(time.delta()).just_finished() {
+        return;
+    }
+
+    match TcpStream::connect(("127.0.0.1", pending.port)) {
+        Ok(stream) => {
+            stream.set_nodelay(true).ok();
             println!("Connected to AI inference server!");
-            s.set_nodelay(true).unwrap();
-            ai_conn.0 = Some(s);
-        } else {
-            eprintln!("Failed to connect to spawned AI server.");
-            std::process::exit(1);
+            ai_worker.0 = Some(spawn_ai_worker(stream));
+            *status = AppStatus::Running;
+            commands.remove_resource::<PendingConnection>();
+        }
+        Err(_) => {
+            if pending.elapsed >= pending.timeout {
+                *status = AppStatus::Failed(
+                    "Could not connect to AI inference server (timed out)".to_string(),
+                );
+                commands.remove_resource::<PendingConnection>();
+            } else {
+                *status = AppStatus::Loading(format!(
+                    "Waiting for AI server to load models… {:.0}s",
+                    pending.elapsed
+                ));
+            }
         }
     }
 }
 
-fn keyboard_input(keyboard_input: Res<ButtonInput<KeyCode>>, mut engine: ResMut<GameEngine>) {
+fn keyboard_input(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut engine: ResMut<GameEngine>,
+    mut dirty: ResMut<RenderDirty>,
+    mut commands: Commands,
+    map_query: Query<Entity, With<MapTile>>,
+) {
     // Only handles first 2 snakes manually for testing
     if engine.0.snakes.len() > 0 {
         if keyboard_input.just_pressed(KeyCode::ArrowUp) {
@@ -134,7 +413,7 @@ fn keyboard_input(keyboard_input: Res<ButtonInput<KeyCode>>, mut engine: ResMut<
             engine.0.set_direction(0, Direction::Left);
         } else if keyboard_input.just_pressed(KeyCode::ArrowRight) {
             engine.0.set_direction(0, Direction::Right);
-        } 
+        }
     }
 
     if engine.0.snakes.len() > 1 {
@@ -153,60 +432,118 @@ fn keyboard_input(keyboard_input: Res<ButtonInput<KeyCode>>, mut engine: ResMut<
         // Restart the game
         let num_snakes = engine.0.snakes.len();
         engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes);
+        
+        // Despawn old map and spawn new map
+        for entity in map_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        spawn_map(&mut commands, &engine.0);
+        dirty.0 = true;
     }
 }
 
-fn game_tick(time: Res<Time>, mut timer: ResMut<TickTimer>, mut engine: ResMut<GameEngine>, mut ai_conn: ResMut<AiConnection>) {
-    if timer.0.tick(time.delta()).just_finished() {
-        if engine.0.game_over {
+fn game_tick(
+    time: Res<Time>,
+    mut timer: ResMut<TickTimer>,
+    mut engine: ResMut<GameEngine>,
+    mut ai_worker: ResMut<AiWorker>,
+    status: Res<AppStatus>,
+    mut dirty: ResMut<RenderDirty>,
+) {
+    // Don't advance the game while still loading or after a fatal error.
+    if !matches!(*status, AppStatus::Running) {
+        return;
+    }
+
+    if engine.0.game_over {
+        // Drain any late AI response so a restart begins from a clean state.
+        if let Some(worker) = &mut ai_worker.0 {
+            while worker.act_rx.try_recv().is_ok() {}
+            worker.awaiting = false;
+        }
+        return;
+    }
+
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+
+    // In AI mode the socket round-trip runs on the worker thread. Here we only
+    // poll for its result without blocking: if the actions for this tick aren't
+    // ready yet we simply skip stepping this tick and try again next one, so a
+    // slow inference slows the game slightly but never drops a render frame.
+    if let Some(worker) = &mut ai_worker.0 {
+        if !worker.awaiting {
+            // Prime the first request; step once its actions come back.
+            if worker.obs_tx.send(gather_observations(&engine.0)).is_err() {
+                eprintln!("AI worker thread stopped");
+                std::process::exit(1);
+            }
+            worker.awaiting = true;
             return;
         }
 
-        if let Some(stream) = &mut ai_conn.0 {
-            let num_snakes = engine.0.snakes.len();
-            let mut byte_payload = vec![0u8; num_snakes * 66 * 4];
-            
-            // 1. Get Observations
-            for s in 0..num_snakes {
-                let obs = engine.0.get_relative_observation(s);
-                for (i, &val) in obs.iter().enumerate() {
-                    let offset = (s * 66 + i) * 4;
-                    byte_payload[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+        match worker.act_rx.try_recv() {
+            Ok(actions) => {
+                for s in 0..engine.0.snakes.len() {
+                    if let Some(&a) = actions.get(s) {
+                        let rel = RelativeAction::from_usize(a as usize);
+                        let dir = rel.to_absolute_direction(engine.0.snakes[s].direction);
+                        engine.0.set_direction(s, dir);
+                    }
                 }
+                worker.awaiting = false;
             }
-
-            // 2. Send to Python
-            if stream.write_all(&byte_payload).is_err() {
-                eprintln!("Lost connection to AI server");
+            Err(TryRecvError::Empty) => return, // not ready; keep rendering, retry next tick
+            Err(TryRecvError::Disconnected) => {
+                eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
+        }
+    }
 
-            // 3. Read Actions
-            let mut action_bytes = vec![0u8; num_snakes * 4];
-            if stream.read_exact(&mut action_bytes).is_err() {
-                eprintln!("Lost connection to AI server");
+    engine.0.step(1.0);
+
+    // The engine no longer ends the game itself on death (it respawns dead
+    // snakes in place so training episodes aren't truncated across the whole
+    // game). For the visualizer/manual-play we still want a clear "game over,
+    // press Space to restart" moment, so detect any death here and freeze.
+    if engine.0.snakes.iter().any(|s| s.is_dead) {
+        engine.0.game_over = true;
+    }
+    dirty.0 = true;
+
+    // Queue the next inference request now so it overlaps the render frames
+    // until the next tick, keeping the game stepping at the full tick rate.
+    if !engine.0.game_over {
+        if let Some(worker) = &mut ai_worker.0 {
+            if worker.obs_tx.send(gather_observations(&engine.0)).is_err() {
+                eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
-
-            for s in 0..num_snakes {
-                let offset = s * 4;
-                let action_int = i32::from_le_bytes(action_bytes[offset..offset + 4].try_into().unwrap());
-                let relative_action = RelativeAction::from_usize(action_int as usize);
-                let new_dir = relative_action.to_absolute_direction(engine.0.snakes[s].direction);
-                engine.0.set_direction(s, new_dir);
-            }
+            worker.awaiting = true;
         }
+    }
+}
 
-        engine.0.step();
+/// Mirrors [`AppStatus`] onto the on-screen [`StatusText`] line.
+fn update_status_text(
+    status: Res<AppStatus>,
+    mut query: Query<(&mut Text, &mut TextColor), With<StatusText>>,
+) {
+    if !status.is_changed() {
+        return;
+    }
 
-        // The engine no longer ends the game itself on death (it respawns
-        // dead snakes in place so training episodes aren't truncated across
-        // the whole game). For the visualizer/manual-play we still want a
-        // clear "game over, press Space to restart" moment, so detect any
-        // death here and freeze the game ourselves.
-        if engine.0.snakes.iter().any(|s| s.is_dead) {
-            engine.0.game_over = true;
-        }
+    let (msg, color) = match &*status {
+        AppStatus::Loading(m) => (m.clone(), Color::srgb(0.9, 0.9, 0.2)),
+        AppStatus::Running => (String::new(), Color::srgb(0.9, 0.9, 0.2)),
+        AppStatus::Failed(m) => (format!("ERROR: {m}"), Color::srgb(1.0, 0.3, 0.3)),
+    };
+
+    for (mut text, mut text_color) in &mut query {
+        text.0 = msg.clone();
+        text_color.0 = color;
     }
 }
 
@@ -215,7 +552,16 @@ fn render_sync(
     engine: Res<GameEngine>,
     segment_query: Query<Entity, With<SnakeSegment>>,
     apple_query: Query<Entity, With<Apple>>,
+    mut dirty: ResMut<RenderDirty>,
 ) {
+    // Only rebuild sprites on frames where the game state actually changed
+    // (a logic tick or a restart); the sprites persist between those frames,
+    // so idle frames do no work and the render loop stays at a smooth 60fps.
+    if !dirty.0 {
+        return;
+    }
+    dirty.0 = false;
+
     // 1. Remove old sprites
     for entity in segment_query.iter() {
         commands.entity(entity).despawn();

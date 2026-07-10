@@ -1,6 +1,5 @@
 use rand::Rng;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+use crate::map::{Map, Terrain};#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
     Up,
     Down,
@@ -73,6 +72,7 @@ impl RelativeAction {
 
 #[derive(Clone, Debug)]
 pub struct SnakeState {
+    pub head_pos: (f32, f32),
     pub body: Vec<(i32, i32)>,
     pub direction: Direction,
     pub is_dead: bool,
@@ -86,6 +86,7 @@ pub struct SnakeState {
 impl SnakeState {
     pub fn new(start_pos: (i32, i32), direction: Direction) -> Self {
         Self {
+            head_pos: (start_pos.0 as f32, start_pos.1 as f32),
             body: vec![start_pos],
             direction,
             is_dead: false,
@@ -104,18 +105,21 @@ pub struct GameState {
     pub apple_pos: (i32, i32),
     pub grid_width: i32,
     pub grid_height: i32,
+    pub map: Map,
     pub game_over: bool,
 }
 
 impl GameState {
     pub fn new(width: i32, height: i32, num_snakes: usize) -> Self {
         let mut snakes = Vec::new();
+        let map = Map::new(width, height);
 
         let mut state = Self {
             snakes: Vec::new(),
             apple_pos: (0, 0),
             grid_width: width,
             grid_height: height,
+            map,
             game_over: false,
         };
 
@@ -201,37 +205,41 @@ impl GameState {
         }
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self, dt: f32) {
         if self.game_over {
             return;
         }
 
-        let mut new_heads = Vec::new();
-        for snake in &self.snakes {
+        let mut cell_changed = vec![false; self.snakes.len()];
+        let mut new_heads = vec![(0, 0); self.snakes.len()];
+
+        for i in 0..self.snakes.len() {
+            let snake = &mut self.snakes[i];
             if snake.is_dead {
-                new_heads.push(snake.body[0]);
+                new_heads[i] = snake.body[0];
                 continue;
             }
-            let head = snake.body[0];
-            let new_head = match snake.direction {
-                Direction::Up => (head.0, head.1 + 1),
-                Direction::Down => (head.0, head.1 - 1),
-                Direction::Left => (head.0 - 1, head.1),
-                Direction::Right => (head.0 + 1, head.1),
-            };
-            new_heads.push(new_head);
+            
+            let q_head_before = snake.body[0];
+            let speed = self.map.get_terrain(q_head_before.0, q_head_before.1).speed();
+            let dir_vec = snake.direction.to_vector();
+            
+            snake.head_pos.0 += dir_vec.0 as f32 * speed * dt;
+            snake.head_pos.1 += dir_vec.1 as f32 * speed * dt;
+            
+            let q_head_after = (snake.head_pos.0.round() as i32, snake.head_pos.1.round() as i32);
+            new_heads[i] = q_head_after;
+            if q_head_after != q_head_before {
+                cell_changed[i] = true;
+            }
         }
 
-        // Snapshot pre-step alive status and precompute head-to-head collision
-        // pairs against that snapshot, so that when two snakes collide head-on
-        // BOTH die (previously, marking the lower-indexed snake dead first made
-        // the `!is_dead` check skip the higher-indexed snake's own check).
         let was_alive: Vec<bool> = self.snakes.iter().map(|s| !s.is_dead).collect();
         let mut head_to_head = vec![false; self.snakes.len()];
         for i in 0..self.snakes.len() {
-            if !was_alive[i] { continue; }
-            for j in (i + 1)..self.snakes.len() {
-                if !was_alive[j] { continue; }
+            if !was_alive[i] || !cell_changed[i] { continue; }
+            for j in 0..self.snakes.len() {
+                if i == j || !was_alive[j] { continue; }
                 if new_heads[i] == new_heads[j] {
                     head_to_head[i] = true;
                     head_to_head[j] = true;
@@ -244,6 +252,14 @@ impl GameState {
             if self.snakes[i].is_dead { continue; }
             let head = new_heads[i];
 
+            if head_to_head[i] {
+                self.snakes[i].is_dead = true;
+                self.snakes[i].death_by_opponent = true;
+                continue;
+            }
+
+            if !cell_changed[i] { continue; }
+
             // Wall collision
             if head.0 < 0 || head.0 >= self.grid_width || head.1 < 0 || head.1 >= self.grid_height {
                 self.snakes[i].is_dead = true;
@@ -251,10 +267,10 @@ impl GameState {
                 continue;
             }
 
-            // Head-to-head collision
-            if head_to_head[i] {
+            // Rock collision
+            if self.map.get_terrain(head.0, head.1) == Terrain::Rock {
                 self.snakes[i].is_dead = true;
-                self.snakes[i].death_by_opponent = true;
+                self.snakes[i].death_by_wall = true;
                 continue;
             }
 
@@ -276,7 +292,7 @@ impl GameState {
 
         // Move and eat apples
         for i in 0..self.snakes.len() {
-            if self.snakes[i].is_dead { continue; }
+            if self.snakes[i].is_dead || !cell_changed[i] { continue; }
             let head = new_heads[i];
             self.snakes[i].body.insert(0, head);
 
@@ -295,6 +311,12 @@ impl GameState {
             let x = rng.gen_range(0..self.grid_width);
             let y = rng.gen_range(0..self.grid_height);
             let pos = (x, y);
+            
+            let terrain = self.map.get_terrain(x, y);
+            if terrain == Terrain::Rock || terrain == Terrain::Water {
+                continue;
+            }
+
             let mut free = true;
             for s in &self.snakes {
                 if s.body.contains(&pos) {
@@ -309,8 +331,8 @@ impl GameState {
         }
     }
 
-    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 66] {
-        let mut obs = [0.0; 66];
+    pub fn get_relative_observation(&self, snake_index: usize) -> [f32; 130] {
+        let mut obs = [0.0; 130];
         let snake = &self.snakes[snake_index];
         if snake.body.is_empty() { return obs; }
 
@@ -326,12 +348,17 @@ impl GameState {
                 let cy = head.1 + f * vec_straight.1 + r * vec_right.1;
                 let cell = (cx, cy);
 
+                let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
+                let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
+                
+                obs[idx * 2 + 1] = terrain.speed();
+
                 if cell == self.apple_pos {
-                    obs[idx] = 1.0;
-                } else if cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height {
-                    obs[idx] = -1.0;
+                    obs[idx * 2] = 1.0;
+                } else if out_of_bounds || terrain == Terrain::Rock {
+                    obs[idx * 2] = -1.0;
                 } else if snake.body.contains(&cell) {
-                    obs[idx] = -1.0;
+                    obs[idx * 2] = -1.0;
                 } else {
                     let mut is_enemy = false;
                     for j in 0..self.snakes.len() {
@@ -341,9 +368,9 @@ impl GameState {
                         }
                     }
                     if is_enemy {
-                        obs[idx] = -0.5;
+                        obs[idx * 2] = -0.5;
                     } else {
-                        obs[idx] = 0.0;
+                        obs[idx * 2] = 0.0;
                     }
                 }
                 idx += 1;
@@ -353,8 +380,8 @@ impl GameState {
         let dx = self.apple_pos.0 - head.0;
         let dy = self.apple_pos.1 - head.1;
         let max_dim = self.grid_width.max(self.grid_height) as f32;
-        obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
-        obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
+        obs[128] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / max_dim;
+        obs[129] = (dx * vec_right.0 + dy * vec_right.1) as f32 / max_dim;
 
         obs
     }

@@ -1,0 +1,28 @@
+[
+    {
+        "length": 1,
+        "score": 0,
+        "kills": 0,
+        "is_dead": false,
+        "death_by_wall": false,
+        "death_by_self": false,
+        "death_by_opponent": false,
+        "model": "models/snake_model.zip",
+        "total_apples_eaten": 0,
+        "total_kills": 0,
+        "total_deaths": 40
+    },
+    {
+        "length": 1,
+        "score": 0,
+        "kills": 0,
+        "is_dead": false,
+        "death_by_wall": false,
+        "death_by_self": false,
+        "death_by_opponent": false,
+        "model": "models/snake_model.zip",
+        "total_apples_eaten": 0,
+        "total_kills": 0,
+        "total_deaths": 60
+    }
+]

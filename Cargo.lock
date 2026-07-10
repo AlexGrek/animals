@@ -181,6 +181,7 @@ version = "0.1.0"
 dependencies = [
  "animals_engine",
  "bevy",
+ "crossbeam-channel",
 ]
 
 [[package]]

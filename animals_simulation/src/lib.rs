@@ -52,7 +52,7 @@ impl Simulation {
         let prev_scores: Vec<u32> = self.game_state.snakes.iter().map(|s| s.score).collect();
         let prev_kills: Vec<u32> = self.game_state.snakes.iter().map(|s| s.kills).collect();
 
-        self.game_state.step();
+        self.game_state.step(1.0);
 
         // Reward function
         let calc_reward = |snake: &animals_engine::snake::SnakeState, prev_score: u32, prev_kills: u32| -> f32 {
@@ -80,7 +80,7 @@ impl Simulation {
                 // Capture the terminal observation before this snake is respawned.
                 terminal_obs.push(self.game_state.get_relative_observation(i).to_vec());
             } else {
-                terminal_obs.push(vec![0.0; 66]);
+                terminal_obs.push(vec![0.0; 130]);
             }
         }
 

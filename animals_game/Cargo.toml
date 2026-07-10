@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 animals_engine = { version = "0.1.0", path = "../animals_engine" }
 bevy = "0.18.1"
+crossbeam-channel = "0.5"
