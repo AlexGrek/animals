@@ -10,22 +10,79 @@ logger = logging.getLogger("learner.main")
 # Ensure src directory is in sys.path if running as script
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from learner.environment import RustMultiSnakeVecEnv
+from learner.environment import RustMultiSnakeVecEnv, MultiProcRustVecEnv
 from stable_baselines3 import PPO
 
 def main():
     parser = argparse.ArgumentParser(description="Reinforcement learning agent for animal behavior simulation.")
     parser.add_argument("--steps", type=int, default=100_000, help="Total timesteps to train.")
-    parser.add_argument("--num-envs", type=int, default=8, help="Number of parallel environment instances.")
+    parser.add_argument("--num-games", type=int, default=8, help="Number of parallel games (each game has 2 snakes).")
+    parser.add_argument("--num-procs", type=int, default=1, help="Number of background processes to spawn for environment stepping.")
     parser.add_argument("--model-path", type=str, default="models/snake_model.zip", help="Path to save the model.")
+    parser.add_argument("--existing", action="append", type=str, help="Existing model config in format path:count, e.g. models/v1.zip:4")
 
     args = parser.parse_args()
 
     try:
-        # Note: num_envs here represents number of games. 
-        # Total SB3 environments will be num_envs * 2.
-        logger.info(f"Creating MARL Vector Env with {args.num_envs} games ({args.num_envs * 2} parallel snakes)...")
-        env = RustMultiSnakeVecEnv(num_games=args.num_envs)
+        if args.num_games % args.num_procs != 0:
+            raise ValueError(f"--num-games ({args.num_games}) must be evenly divisible by --num-procs ({args.num_procs}).")
+            
+        games_per_proc = args.num_games // args.num_procs
+        
+        # Parse existing models
+        total_existing_counts = {}
+        total_existing_snakes = 0
+        
+        if args.existing:
+            for ex in args.existing:
+                parts = ex.split(":")
+                if len(parts) != 2:
+                    raise ValueError(f"Invalid --existing format: {ex}. Expected path:count")
+                path = parts[0]
+                count = int(parts[1])
+                
+                if not os.path.exists(path) and not os.path.exists(path + ".zip"):
+                    raise FileNotFoundError(f"Existing model not found at {path}")
+                
+                total_existing_counts[path] = total_existing_counts.get(path, 0) + count
+                total_existing_snakes += count
+                
+        total_snakes = args.num_games * 2
+        training_count = total_snakes - total_existing_snakes
+        
+        if training_count < 1:
+            raise ValueError(f"Total snakes ({total_snakes}) must be greater than total existing snakes ({total_existing_snakes}) to leave room for training.")
+
+        logger.info(f"Creating MARL Vector Env with {args.num_games} games ({total_snakes} total snakes) across {args.num_procs} processes...")
+        logger.info(f"  - Training snakes: {training_count}")
+        for path, count in total_existing_counts.items():
+            logger.info(f"  - Existing model '{path}' snakes: {count}")
+            
+        # Distribute existing snakes evenly
+        existing_models_per_proc = [{} for _ in range(args.num_procs)]
+        for path, count in total_existing_counts.items():
+            for i in range(count):
+                proc_idx = i % args.num_procs
+                existing_models_per_proc[proc_idx][path] = existing_models_per_proc[proc_idx].get(path, 0) + 1
+                
+        def make_env_fn(proc_idx):
+            def _init():
+                ex_models = existing_models_per_proc[proc_idx]
+                snakes_in_proc = games_per_proc * 2
+                ex_count = sum(ex_models.values())
+                tr_count = snakes_in_proc - ex_count
+                return RustMultiSnakeVecEnv(
+                    num_games=games_per_proc,
+                    training_count=tr_count,
+                    existing_models=ex_models
+                )
+            return _init
+
+        if args.num_procs == 1:
+            env = make_env_fn(0)()
+        else:
+            env_fns = [make_env_fn(i) for i in range(args.num_procs)]
+            env = MultiProcRustVecEnv(env_fns)
 
         logger.info("Initializing PPO agent with device='cpu'...")
         # The policy is a tiny MLP; GPU host<->device transfer/launch overhead

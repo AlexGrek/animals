@@ -70,9 +70,12 @@ fn setup(mut commands: Commands, mut ai_conn: ResMut<AiConnection>) {
 
         println!("Spawning AI inference server on port {} with model {}...", port, model_path);
         
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let learner_dir = format!("{}/../learner", manifest_dir);
+
         let child = std::process::Command::new("uv")
             .args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--model", &model_path])
-            .current_dir("../learner")
+            .current_dir(learner_dir)
             .env("PYTHONPATH", "src")
             .spawn()
             .expect("Failed to spawn Python AI server");
@@ -130,10 +133,6 @@ fn keyboard_input(keyboard_input: Res<ButtonInput<KeyCode>>, mut engine: ResMut<
 fn game_tick(time: Res<Time>, mut timer: ResMut<TickTimer>, mut engine: ResMut<GameEngine>, mut ai_conn: ResMut<AiConnection>) {
     if timer.0.tick(time.delta()).just_finished() {
         if engine.0.game_over {
-            if ai_conn.0.is_some() {
-                // Auto restart in AI mode
-                engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT);
-            }
             return;
         }
 

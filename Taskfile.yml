@@ -24,12 +24,6 @@ tasks:
     cmds:
       - PYTHONPATH=src uv run python -m learner.main --steps {{.STEPS}}
 
-  export-model:
-    desc: Export the trained SB3 model weights to a JSON file
-    dir: learner
-    cmds:
-      - PYTHONPATH=src uv run python -m learner.export_weights
-
   build-sim:
     desc: Build the PyO3 rust code and install into learner venv
     dir: learner

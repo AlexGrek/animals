@@ -12,8 +12,8 @@ A Rust library compiled to a Python C-extension via Maturin. This exposes the `a
 
 ### 3. ML Training Client (`learner`)
 A Python package managed by `uv`. It leverages **Stable-Baselines3** to train the agents via Proximal Policy Optimization (PPO).
-- **`environment.py`**: Contains `RustMultiSnakeVecEnv`, a custom `VecEnv` that tricks SB3 into thinking it's interacting with $2N$ single-player games, while actually interacting with $N$ PyO3 games containing 2 snakes each. This facilitates self-play MARL.
-- **`main.py`**: The training orchestrator.
+- **`environment.py`**: Contains `RustMultiSnakeVecEnv`, a custom `VecEnv` that tricks SB3 into thinking it's interacting with $K$ single-player games, while actually interacting with $N$ PyO3 games containing 2 snakes each. It internally manages and generates actions for any configured existing AI models, allowing the training agent to play against a diverse set of opponents (mixed-model training).
+- **`main.py`**: The training orchestrator. Supports configuring multiple existing models alongside the actively training model via the `--existing` flag.
 - **`play.py`**: A lightweight TCP server designed to act as an inference engine for the Bevy visualizer.
 
 ### 4. Bevy Visualizer (`animals_game`)

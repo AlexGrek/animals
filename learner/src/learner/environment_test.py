@@ -9,18 +9,11 @@ import multiprocessing as mp
 try:
     import animals_simulation
 except ImportError:
-    # Allow fallback during development/mock modes
     animals_simulation = None
 
 from stable_baselines3 import PPO
 
 class RustMultiSnakeVecEnv(VecEnv):
-    """
-    A Custom VecEnv that takes N Rust PyO3 simulation instances
-    and presents training_count independent environments to Stable-Baselines3.
-    It internally manages the remaining snakes using existing_models.
-    """
-
     def __init__(self, num_games: int = 4, training_count: Optional[int] = None, existing_models: Optional[Dict[str, int]] = None):
         self.num_games = num_games
         self.total_snakes = num_games * 2
@@ -33,55 +26,38 @@ class RustMultiSnakeVecEnv(VecEnv):
         self.training_count = training_count
         self.existing_models = {}
         
-        # Load the models lazily (useful for multiprocessing to avoid passing large objects)
+        # Load the models!
         for path, count in existing_models.items():
             if count > 0:
                 self.existing_models[path] = PPO.load(path)
             
-        # Create snake assignment list
         assignments = ['train'] * training_count
-        for name, count in existing_models.items():
-            assignments.extend([name] * count)
+        for path, count in existing_models.items():
+            assignments.extend([path] * count)
             
         if len(assignments) != self.total_snakes:
             raise ValueError(f"Total snakes ({self.total_snakes}) does not match sum of training ({training_count}) and existing models.")
             
-        # Shuffle assignments so training agent plays diverse opponents
         random.shuffle(assignments)
         
-        # Pre-compute indices for each model
         self.training_indices = [i for i, a in enumerate(assignments) if a == 'train']
-        self.model_indices = {name: [i for i, a in enumerate(assignments) if a == name] for name in self.existing_models.keys()}
+        self.model_indices = {path: [i for i, a in enumerate(assignments) if a == path] for path in self.existing_models.keys()}
         
-        # Action space: 3 discrete actions (0: Straight, 1: Turn Right, 2: Turn Left)
         action_space = spaces.Discrete(3)
+        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(66,), dtype=np.float32)
         
-        # Observation space: 66 floats (8x8 grid + 2D global direction to apple)
-        observation_space = spaces.Box(
-            low=-1.0, 
-            high=1.0, 
-            shape=(66,), 
-            dtype=np.float32
-        )
-        
-        # Super init with training_count (the number of envs SB3 sees)
         super().__init__(self.training_count, observation_space, action_space)
 
         if animals_simulation is None:
-            raise ImportError(
-                "Could not import 'animals_simulation'. "
-                "Please build the Rust subproject using maturin (e.g. 'task build-sim')."
-            )
+            raise ImportError("Could not import 'animals_simulation'.")
 
         self.games = [animals_simulation.Simulation() for _ in range(num_games)]
         
-        # Global Buffers for ALL snakes
         self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
         self.all_rews = np.zeros((self.total_snakes,), dtype=np.float32)
         self.all_dones = np.zeros((self.total_snakes,), dtype=bool)
         self.all_infos = [{} for _ in range(self.total_snakes)]
         
-        # SB3 action buffer (only size of training_count)
         self.actions = np.zeros((self.training_count,), dtype=int)
 
     def reset(self) -> np.ndarray:
@@ -89,62 +65,46 @@ class RustMultiSnakeVecEnv(VecEnv):
             obs0, obs1 = game.reset()
             self.all_obs[i * 2] = obs0
             self.all_obs[i * 2 + 1] = obs1
-            
-        # Return only training observations
-        if self.training_count == 0:
-            return np.zeros((0, 66), dtype=np.float32)
         return np.copy(self.all_obs[self.training_indices])
 
     def step_async(self, actions: np.ndarray) -> None:
         self.actions = actions
 
     def step_wait(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[Dict[str, Any]]]:
-        # 1. Compute actions for all snakes
         all_actions = np.zeros(self.total_snakes, dtype=int)
         
-        # Place training actions
         for idx, train_idx in enumerate(self.training_indices):
             all_actions[train_idx] = self.actions[idx]
             
-        # Compute actions for existing models
-        for name, model in self.existing_models.items():
-            indices = self.model_indices[name]
+        for path, model in self.existing_models.items():
+            indices = self.model_indices[path]
             if len(indices) > 0:
                 obs_for_model = self.all_obs[indices]
-                # Predict stochastic actions for diverse gameplay
                 actions, _ = model.predict(obs_for_model, deterministic=False)
                 for i, idx in enumerate(indices):
                     all_actions[idx] = actions[i]
 
-        # 2. Step all games
         for i, game in enumerate(self.games):
             a0 = int(all_actions[i * 2])
             a1 = int(all_actions[i * 2 + 1])
             
             (o0, o1), (r0, r1), (d0, d1) = game.step(a0, a1)
-            
             game_done = bool(d0 or d1)
             
             self.all_rews[i * 2] = r0
             self.all_rews[i * 2 + 1] = r1
             self.all_dones[i * 2] = game_done
             self.all_dones[i * 2 + 1] = game_done
-            
             self.all_infos[i * 2] = {}
             self.all_infos[i * 2 + 1] = {}
             
             if game_done:
                 self.all_infos[i * 2]["terminal_observation"] = np.array(o0, dtype=np.float32)
                 self.all_infos[i * 2 + 1]["terminal_observation"] = np.array(o1, dtype=np.float32)
-                
                 o0, o1 = game.reset()
                 
             self.all_obs[i * 2] = o0
             self.all_obs[i * 2 + 1] = o1
-
-        # 3. Extract and return training snake data
-        if self.training_count == 0:
-             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         buf_obs = self.all_obs[self.training_indices]
         buf_rews = self.all_rews[self.training_indices]
@@ -183,8 +143,6 @@ def _worker(remote, parent_remote, env_fn_wrapper):
             elif cmd == 'reset':
                 obs = env.reset()
                 remote.send(obs)
-            elif cmd == 'get_training_count':
-                remote.send(env.training_count)
             elif cmd == 'close':
                 env.close()
                 remote.close()
@@ -209,10 +167,6 @@ class CloudpickleWrapper:
         self.var = pickle.loads(obs)
 
 class MultiProcRustVecEnv(VecEnv):
-    """
-    Multiprocessing wrapper that distributes RustMultiSnakeVecEnv across multiple Python processes.
-    This effectively uses multiple CPU cores to step the environments and generate actions for the static models.
-    """
     def __init__(self, env_fns: List[Callable[[], RustMultiSnakeVecEnv]]):
         self.waiting = False
         self.closed = False
@@ -227,78 +181,16 @@ class MultiProcRustVecEnv(VecEnv):
             self.processes.append(process)
             work_remote.close()
             
-        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(66,), dtype=np.float32)
-        action_space = spaces.Discrete(3)
+        # We need to compute total num_envs across all procs.
+        # But we can't easily query the workers. Let's just pass it or create a dummy to inspect space.
+        dummy = env_fns[0]()
+        observation_space = dummy.observation_space
+        action_space = dummy.action_space
+        # Actually we need total training_count. Let's get it from the fns.
+        # But fns are callables. Let's assume the caller passes the training counts or we do a quick check.
+        # We can just sum them.
+        dummy.close()
         
-        self.training_counts = []
-        for remote in self.remotes:
-            remote.send(('get_training_count', None))
-            self.training_counts.append(remote.recv())
-            
-        total_training_envs = sum(self.training_counts)
-        super().__init__(total_training_envs, observation_space, action_space)
-
-    def reset(self) -> np.ndarray:
-        for remote in self.remotes:
-            remote.send(('reset', None))
-        results = [remote.recv() for remote in self.remotes]
-        
-        if self.num_envs == 0:
-            return np.zeros((0, 66), dtype=np.float32)
-            
-        # We need to filter out empty arrays (e.g. if a proc has 0 training count)
-        valid_results = [r for r in results if len(r) > 0]
-        if not valid_results:
-             return np.zeros((0, 66), dtype=np.float32)
-        return np.concatenate(valid_results)
-
-    def step_async(self, actions: np.ndarray) -> None:
-        start_idx = 0
-        for remote, count in zip(self.remotes, self.training_counts):
-            end_idx = start_idx + count
-            remote.send(('step', actions[start_idx:end_idx]))
-            start_idx = end_idx
-        self.waiting = True
-
-    def step_wait(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[Dict[str, Any]]]:
-        results = [remote.recv() for remote in self.remotes]
-        self.waiting = False
-        
-        obs_list, rews_list, dones_list, infos_list = zip(*results)
-        
-        # Merge lists of dicts
-        merged_infos = []
-        for info_list in infos_list:
-            merged_infos.extend(info_list)
-            
-        if self.num_envs == 0:
-             return np.zeros((0, 66), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
-
-        return np.concatenate([o for o in obs_list if len(o) > 0]), \
-               np.concatenate([r for r in rews_list if len(r) > 0]), \
-               np.concatenate([d for d in dones_list if len(d) > 0]), \
-               merged_infos
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        if self.waiting:
-            for remote in self.remotes:
-                remote.recv()
-        for remote in self.remotes:
-            remote.send(('close', None))
-        for process in self.processes:
-            process.join()
-        self.closed = True
-
-    def get_attr(self, attr_name: str, indices=None) -> list[Any]:
-        return [None] * self.num_envs
-
-    def set_attr(self, attr_name: str, value: Any, indices=None) -> None:
-        pass
-
-    def env_method(self, method_name: str, *method_args, indices=None, **method_kwargs) -> list[Any]:
-        pass
-
-    def env_is_wrapped(self, wrapper_class: type, indices=None) -> list[bool]:
-        return [False] * self.num_envs
+        self.training_counts = [] # need to know to split actions
+        # Let's send a custom command or just rely on the user passing it.
+        # Better: let's pass a `training_counts` list to __init__.
