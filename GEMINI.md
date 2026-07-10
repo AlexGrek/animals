@@ -15,15 +15,15 @@ task check                # cargo check the Rust workspace
 task build-sim            # Build PyO3 module + install into learner venv (uv pip install -e)
 task train STEPS=500000   # Train the PPO model (saves to learner/models/snake_model.zip)
 task play                 # Run the Bevy game, manual keyboard control
-task play-ai -- --snakes 4 --model models/v1.zip --model models/v2.zip   # Watch trained models play
-task test-ai -- --snakes 4 --model models/v1.zip --output results.json  # Headless full-speed eval, JSON stats
+task play-ai -- --snakes 4 --model v1 --model v2   # Watch trained models play
+task test-ai -- --snakes 4 --model v1 --output results.json  # Headless full-speed eval, JSON stats
 ```
 
 Training options beyond STEPS require running directly (from `learner/`, with `PYTHONPATH=src`):
 
 ```bash
 uv run python -m learner.main --num-games 16 --snakes-per-game 2 --num-procs 4 \
-    --existing models/v1.zip:4 --existing models/v2.zip:2
+    --existing v1:4 --existing v2:2
 ```
 
 `--num-games` must be evenly divisible by `--num-procs`. `--existing path:count` fills snake slots with frozen past models (mixed-model self-play).

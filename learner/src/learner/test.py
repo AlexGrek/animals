@@ -38,13 +38,22 @@ def main():
         logger.error(f"Number of models ({len(model_paths)}) must be 1 or equal to number of snakes ({num_snakes}).")
         sys.exit(1)
 
+    from learner.model_utils import resolve_model_path
+
+    # Resolve snake model paths
+    resolved_model_paths = []
+    for path in model_paths:
+        resolved = resolve_model_path(path)
+        if resolved is None:
+            logger.error(f"Model not found at {path}.")
+            sys.exit(1)
+        resolved_model_paths.append(resolved)
+    model_paths = resolved_model_paths
+
     models = []
     loaded_models = {}
     for path in model_paths:
         if path not in loaded_models:
-            if not os.path.exists(path + ".zip") and not os.path.exists(path):
-                logger.error(f"Model not found at {path}.")
-                sys.exit(1)
             logger.info(f"Loading snake model from {path}...")
             loaded_models[path] = PPO.load(path)
         models.append(loaded_models[path])
@@ -59,18 +68,24 @@ def main():
             logger.error(f"Number of prey models ({len(prey_model_paths)}) must be 1 or equal to number of preys ({num_preys}).")
             sys.exit(1)
 
+        resolved_prey_paths = []
+        for path in prey_model_paths:
+            resolved = resolve_model_path(path)
+            if resolved is None:
+                logger.error(f"Prey model not found at {path}.")
+                sys.exit(1)
+            resolved_prey_paths.append(resolved)
+        prey_model_paths = resolved_prey_paths
+
         loaded_prey_models = {}
         for path in prey_model_paths:
             if path not in loaded_prey_models:
-                if not os.path.exists(path + ".zip") and not os.path.exists(path):
-                    logger.error(f"Prey model not found at {path}.")
-                    sys.exit(1)
                 logger.info(f"Loading prey model from {path}...")
                 loaded_prey_models[path] = PPO.load(path)
             prey_models.append(loaded_prey_models[path])
     else:
         prey_models = [None] * num_preys
-        
+
     # Handle multiple amphibia models
     amphibia_model_paths = args.amphibia_model
     amphibia_models = []
@@ -81,12 +96,18 @@ def main():
             logger.error(f"Number of amphibia models ({len(amphibia_model_paths)}) must be 1 or equal to number of amphibias ({num_amphibias}).")
             sys.exit(1)
 
+        resolved_amphibia_paths = []
+        for path in amphibia_model_paths:
+            resolved = resolve_model_path(path)
+            if resolved is None:
+                logger.error(f"Amphibia model not found at {path}.")
+                sys.exit(1)
+            resolved_amphibia_paths.append(resolved)
+        amphibia_model_paths = resolved_amphibia_paths
+
         loaded_amphibia_models = {}
         for path in amphibia_model_paths:
             if path not in loaded_amphibia_models:
-                if not os.path.exists(path + ".zip") and not os.path.exists(path):
-                    logger.error(f"Amphibia model not found at {path}.")
-                    sys.exit(1)
                 logger.info(f"Loading amphibia model from {path}...")
                 loaded_amphibia_models[path] = PPO.load(path)
             amphibia_models.append(loaded_amphibia_models[path])

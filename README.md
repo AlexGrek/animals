@@ -47,7 +47,7 @@ The environment can be distributed across multiple CPU cores, allowing you to tr
 3. **Train against Past Iterations (Mixed-Model Training)**
    Continue training a new model while pitting it against 4 instances of `v1` and 2 instances of `v2`:
    ```bash
-   cd learner && uv run python src/learner/main.py --num-games 16 --snakes-per-game 2 --existing models/v1.zip:4 --existing models/v2.zip:2
+   cd learner && uv run python src/learner/main.py --num-games 16 --snakes-per-game 2 --existing v1:4 --existing v2:2
    ```
 
 ## Evaluation & Visualization
@@ -55,12 +55,12 @@ The environment can be distributed across multiple CPU cores, allowing you to tr
 **Watch the Agents Play**
 Use the Bevy visualizer to watch your trained models in action. The Rust application automatically spawns the Python inference server.
 ```bash
-task play-ai -- --snakes 4 --model models/snake_model.zip --model models/v1.zip
+task play-ai -- --snakes 4 --model snake_model --model v1
 ```
 *(If you supply M models and N snakes, models map 1:1. If you supply 1 model, it is duplicated for all N snakes).*
 
 **Headless Fast-Forward Test**
 Run a full-speed simulation without rendering and dump the final game statistics (score, length, kills, causes of death) to a JSON file.
 ```bash
-task test-ai -- --snakes 4 --model models/snake_model.zip --output metrics.json
+task test-ai -- --snakes 4 --model snake_model --output metrics.json
 ```

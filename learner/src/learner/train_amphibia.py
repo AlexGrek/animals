@@ -24,6 +24,11 @@ def main():
 
     args = parser.parse_args()
 
+    from learner.model_utils import resolve_model_path, normalize_model_path
+    args.model_path = normalize_model_path(args.model_path)
+    if args.snake_model:
+        args.snake_model = resolve_model_path(args.snake_model) or normalize_model_path(args.snake_model)
+
     try:
         logger.info(f"Creating Amphibia Vector Env with {args.num_games} games...")
         env = RustAmphibiaVecEnv(

@@ -28,6 +28,13 @@ def main():
 
     args = parser.parse_args()
 
+    from learner.model_utils import resolve_model_path, normalize_model_path
+    args.model_path = normalize_model_path(args.model_path)
+    if args.prey_model:
+        args.prey_model = resolve_model_path(args.prey_model) or normalize_model_path(args.prey_model)
+    if args.amphibia_model:
+        args.amphibia_model = resolve_model_path(args.amphibia_model) or normalize_model_path(args.amphibia_model)
+
     try:
         if args.num_games % args.num_procs != 0:
             raise ValueError(f"--num-games ({args.num_games}) must be evenly divisible by --num-procs ({args.num_procs}).")
@@ -39,6 +46,7 @@ def main():
         total_existing_snakes = 0
         
         if args.existing:
+            from learner.model_utils import resolve_model_path
             for ex in args.existing:
                 parts = ex.split(":")
                 if len(parts) != 2:
@@ -46,10 +54,11 @@ def main():
                 path = parts[0]
                 count = int(parts[1])
                 
-                if not os.path.exists(path) and not os.path.exists(path + ".zip"):
+                resolved = resolve_model_path(path)
+                if resolved is None:
                     raise FileNotFoundError(f"Existing model not found at {path}")
                 
-                total_existing_counts[path] = total_existing_counts.get(path, 0) + count
+                total_existing_counts[resolved] = total_existing_counts.get(resolved, 0) + count
                 total_existing_snakes += count
                 
         total_snakes = args.num_games * args.snakes_per_game

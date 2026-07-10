@@ -18,16 +18,34 @@ from stable_baselines3 import PPO
 logger = logging.getLogger("learner.model_utils")
 
 
+def normalize_model_path(path: str) -> str:
+    """Normalize a model path to be relative to the models/ directory with .zip extension."""
+    if not path.endswith(".zip"):
+        path = path + ".zip"
+    
+    # If the path has no directory component, prepend 'models/'
+    head, tail = os.path.split(path)
+    if not head:
+        path = os.path.join("models", path)
+    return path
+
+
 def resolve_model_path(path: str) -> Optional[str]:
     """Return an existing path for `path` (trying a few common roots), or None."""
+    normalized = normalize_model_path(path)
+    learner_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    
     candidates = [
         path,
         path if path.endswith(".zip") else path + ".zip",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../", path),
+        normalized,
+        os.path.join(learner_dir, path),
+        os.path.join(learner_dir, path if path.endswith(".zip") else path + ".zip"),
+        os.path.join(learner_dir, normalized),
     ]
     for c in candidates:
         if os.path.exists(c):
-            return c
+            return os.path.abspath(c)
     return None
 
 

@@ -17,19 +17,19 @@ task train STEPS=500000        # Train the snake PPO model (saves to learner/mod
 task train-prey STEPS=1000000  # Train the prey PPO model against a frozen snake model
 task train-amphibia STEPS=1000000  # Train the amphibia PPO model against a frozen snake model
 task play                      # Run the Bevy game, manual keyboard control
-task play-ai -- --snakes 4 --model models/v1.zip --model models/v2.zip   # Watch trained models play
-task test-ai -- --snakes 4 --model models/v1.zip --output results.json  # Headless full-speed eval, JSON stats
+task play-ai -- --snakes 4 --model v1 --model v2   # Watch trained models play
+task test-ai -- --snakes 4 --model v1 --output results.json  # Headless full-speed eval, JSON stats
 ```
 
 Training options beyond STEPS require running directly (from `learner/`, with `PYTHONPATH=src`):
 
 ```bash
 uv run python -m learner.main --num-games 16 --snakes-per-game 2 --num-procs 4 \
-    --existing models/v1.zip:4 --existing models/v2.zip:2 \
+    --existing v1:4 --existing v2:2 \
     --preys-per-game 2 --amphibias-per-game 1 \
-    --prey-model models/prey_model.zip --amphibia-model models/amphibia_model.zip
-uv run python -m learner.train_prey --num-games 16 --preys-per-game 1 --snake-model models/snake_model.zip
-uv run python -m learner.train_amphibia --num-games 16 --amphibias-per-game 1 --snake-model models/snake_model.zip
+    --prey-model prey_model --amphibia-model amphibia_model
+uv run python -m learner.train_prey --num-games 16 --preys-per-game 1 --snake-model snake_model
+uv run python -m learner.train_amphibia --num-games 16 --amphibias-per-game 1 --snake-model snake_model
 ```
 
 `--num-games` must be evenly divisible by `--num-procs`. `--existing path:count` fills snake slots with frozen past models (mixed-model self-play). Any frozen counterpart model (prey/amphibia for snake training, snake for prey/amphibia training) that is missing or has a stale observation shape falls back to a static "do nothing" action instead of erroring (`learner/src/learner/model_utils.py`) — this is what lets the pipeline bootstrap from zero trained models: train snake vs. static prey first, then prey/amphibia vs. that snake, then snake again vs. the newly trained prey/amphibia, and so on.
