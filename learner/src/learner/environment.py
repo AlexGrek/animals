@@ -5,6 +5,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from typing import Tuple, Dict, Any, Optional, List, Callable
 import random
 import multiprocessing as mp
+import os
 
 try:
     import animals_simulation
@@ -74,7 +75,21 @@ class RustMultiSnakeVecEnv(VecEnv):
                 "Please build the Rust subproject using maturin (e.g. 'task build-sim')."
             )
 
-        self.games = [animals_simulation.Simulation(self.snakes_per_game, 1) for _ in range(num_games)]
+        # Load prey model
+        prey_model_path = "models/prey_model.zip"
+        if not os.path.exists(prey_model_path):
+            alt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), prey_model_path)
+            if os.path.exists(alt_path):
+                prey_model_path = alt_path
+            else:
+                alt_path2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../models/prey_model.zip")
+                if os.path.exists(alt_path2):
+                    prey_model_path = alt_path2
+                else:
+                    raise FileNotFoundError(f"Prey model not found at {prey_model_path}")
+        self.prey_model = PPO.load(prey_model_path)
+
+        self.games = [animals_simulation.Simulation(self.snakes_per_game, 2) for _ in range(num_games)]
         
         # Global Buffers for ALL snakes
         self.all_obs = np.zeros((self.total_snakes, 66), dtype=np.float32)
@@ -122,8 +137,13 @@ class RustMultiSnakeVecEnv(VecEnv):
             end_idx = start_idx + self.snakes_per_game
             actions_list = all_actions[start_idx:end_idx].tolist()
 
-            prey_action = [random.randint(0, 4)]
-            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _ = game.step(actions_list, prey_action)
+            prey_obs_list = game.get_all_prey_observations()
+            prey_actions = []
+            for p_obs in prey_obs_list:
+                pa, _ = self.prey_model.predict(np.array(p_obs, dtype=np.float32).reshape(1, 64), deterministic=False)
+                prey_actions.append(int(pa[0]))
+
+            obs_list, rews_list, dones_list, terminal_obs_list, _, _, _ = game.step(actions_list, prey_actions)
 
             for s in range(self.snakes_per_game):
                 idx = start_idx + s
