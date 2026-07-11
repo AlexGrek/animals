@@ -4,7 +4,7 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
 
 ## Observation Space
 
-### Snake (`SNAKE_OBS_SIZE = 69` floats, `animals_engine/src/game.rs::get_relative_observation`)
+### Snake (`SNAKE_OBS_SIZE = 133` floats, `animals_engine/src/game.rs::get_relative_observation`)
 - `[0..64)` — 8x8 grid in the snake's own rotated frame (4 cells ahead, 3 behind, 4 right, 3 left of the head):
   - **1.0**: Prey (either species)
   - **-1.0**: Wall / rock / own body
@@ -15,8 +15,9 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
 - `[66]` — distance to that prey, normalized by `SMELL_RANGE` (`1.0` if nothing is smelled).
 - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT` (see below).
 - `[68]` — own length `/ 100`, capped at 1.
+- `[69..133)` — 8x8 grass-health grid over the *same* rotated cells as `[0..64)`: `grass_health` in `[0, 1]` per cell (1.0 = full grass, 0.0 = grazed bare / non-grass). Lets the snake read where prey have recently fed and head toward likely prey.
 
-### Prey / Amphibia (`PREY_OBS_SIZE = 67` floats, `animals_engine/src/game.rs::get_prey_observation`, shared by both species)
+### Prey / Amphibia (`PREY_OBS_SIZE = 131` floats, `animals_engine/src/game.rs::get_prey_observation`, shared by both species)
 - `[0..64)` — 8x8 grid in the absolute frame (up is always north):
   - **-1.0**: Out of bounds / rock
   - **-0.8**: Snake head (the lethal part — snakes eat in a 3×3 radius around their head)
@@ -24,6 +25,7 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
   - otherwise **`prey.species.speed_on(terrain) * 0.5`** — this is species-relative, so the *same* map cell reads differently to the two species (water ≈ 0.1 to Prey, ≈ 0.5 to Amphibia; grass ≈ 0.4 to Prey, ≈ 0.3 to Amphibia)
 - `[64]`/`[65]` — unit direction (east/north) to the nearest **alive** snake head; zero if no snake is alive.
 - `[66]` — distance to that head, normalized by the larger grid dimension (`1.0` if no snake is alive).
+- `[67..131)` — 8x8 grass-health grid over the *same* absolute cells as `[0..64)`: `grass_health` in `[0, 1]` per cell — where the food is, so prey can graze toward full grass (which also drives reproduction once `grass_eaten ≥ 8`).
 
 This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8 cell radius) is often too small to see an oncoming snake in time. Note this is asymmetric with the snake's sense of prey: prey always see the globally nearest snake head, while a snake only *smells* prey within `SMELL_RANGE` (see above) — deliberate, so a snake must explore to find prey rather than beelining toward one anywhere on the map.
 
@@ -33,6 +35,7 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 - **Death**: `-5.0` if by hunger, else `-3.0` (wall, self, opponent, or head-to-head collision).
 - **Kill** (opponent collides into you): `+50.0 * Δkills` — additive with eating, not `else if`, so a same-tick kill-and-eat is fully credited.
 - **Eat** (prey within a 3×3 radius of the head): `+30.0 * Δscore`.
+- **Mitosis** (body reached the split threshold this tick — see below): `+60.0 * mitosis_count`, added on top of any death/eat/kill/shaping. Kept as the single largest reward (the reproduction goal) but only just above a kill, since each mitosis already rides on ~6-8 eats worth of `+30`; a larger spike mostly inflates value-function variance.
 - Otherwise (no kill/eat this tick):
   - **Smell shaping**: `0.15 * clamp(prev_dist_to_smelled_prey - curr_dist, -2.0, 2.0)`, gated to prey within `SMELL_RANGE` torus-wrapped Manhattan cells (`min_dist_to_smelled_prey` in `animals_simulation/src/lib.rs`). If either side of the delta has nothing in smell range (prey just entered/left range, or none exists), no shaping is applied that tick — the reward never leaks information the policy can't observe. The distance itself is torus-wrapped, unlike the pre-existing (buggy) unwrapped version.
   - **Hunger penalty**: `-0.01 * steps_since_last_eat / (HUNGER_LIMIT / 4)`.
@@ -77,8 +80,21 @@ Stable-Baselines3 natively only supports single-agent environments. To enable MA
 All three batch their counterpart's action prediction: they gather every game's observations for that counterpart into one array and call `model.predict()` once per step instead of once per agent (`learner/src/learner/model_utils.py::predict_actions`), which matters because with 16+ games per process each step would otherwise trigger dozens of single-row PyTorch forward passes.
 
 ## Neural Network Architecture
-- **Snake**: MLP `[256, 256, 256]` (both `pi` and `vf`).
-- **Prey / Amphibia**: MLP `[128, 128]` — smaller observation (67 vs 69 floats) and simpler action space (5 discrete moves vs 3 turns), so a smaller network is sufficient and faster to train.
+
+Every observation carries **two co-located 8×8 grids** — an entity/terrain grid and a
+grass-health grid (the latter lets a snake infer where prey have been feeding, since grazed
+cells read as depleted). Rather than flatten them into the MLP (which discards their spatial
+structure), all three policies use a shared custom feature extractor,
+`GridCnnExtractor` (`learner/src/learner/policy.py`): it reshapes the two grids into a
+2-channel 8×8 image, runs two padded 3×3 convs (2→16→32 channels) + a linear projection to 128
+features, and concatenates the raw scalar features (smell/threat direction+distance, hunger,
+length). The grid/scalar index slices live in `learner/src/learner/constants.py`
+(`SNAKE_GRID1/2`, `PREY_GRID1/2`) and mirror the write order in `animals_engine/src/game.rs`.
+
+On top of that extractor:
+- **Snake**: MLP `pi=[256, 256]`, `vf=[256, 256]`.
+- **Prey / Amphibia**: MLP `pi=[128, 128]`, `vf=[128, 128]` — simpler action space (5 discrete
+  moves vs 3 turns), so a smaller head is sufficient and faster to train.
 - Framework: PyTorch via Stable-Baselines3, Algorithm: PPO.
 
 ## PPO Hyperparameters & CPU Throughput

@@ -208,8 +208,13 @@ impl Simulation {
                 self.visited[i].clear();
             }
 
+            // Mitosis (body reached the split threshold) is the pinnacle event, so
+            // it stays the largest single reward — but only just above a kill (50)
+            // rather than 2x it. Each mitosis already sits on top of ~6-8 eats worth
+            // of +30, so an outsized spike here mostly inflates value-function
+            // variance without changing the incentive ordering.
             if self.game_state.snakes[i].mitosis_count > 0 {
-                reward += 100.0 * self.game_state.snakes[i].mitosis_count as f32;
+                reward += 60.0 * self.game_state.snakes[i].mitosis_count as f32;
                 self.game_state.snakes[i].mitosis_count = 0;
             }
 

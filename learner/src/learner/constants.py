@@ -23,3 +23,22 @@ SMELL_RANGE = 30
 PREY_NUM_ACTIONS = 5
 # Snake discrete action space: 0 Straight, 1 Turn Right, 2 Turn Left.
 SNAKE_NUM_ACTIONS = 3
+
+# --- Observation grid layout (for the CNN feature extractor, `policy.py`) ---
+# Each observation holds two co-located 8x8 grids fed as a 2-channel image plus
+# a handful of scalar features between/after them. These slices mirror the write
+# order in `animals_engine/src/game.rs` (get_relative_observation / get_prey_observation)
+# and MUST stay in sync with the Rust obs builders.
+GRID_H = 8
+GRID_W = 8
+GRID_CELLS = GRID_H * GRID_W  # 64
+
+# Snake: terrain/entity grid [0:64), scalars [64:69) (smell dir/dist, hunger,
+# length), grass-health grid [69:133).
+SNAKE_GRID1 = (0, GRID_CELLS)
+SNAKE_GRID2 = (SNAKE_OBS_SIZE - GRID_CELLS, SNAKE_OBS_SIZE)  # (69, 133)
+
+# Prey/Amphibia: terrain grid [0:64), scalars [64:67) (snake dir/dist),
+# grass-health grid [67:131).
+PREY_GRID1 = (0, GRID_CELLS)
+PREY_GRID2 = (PREY_OBS_SIZE - GRID_CELLS, PREY_OBS_SIZE)  # (67, 131)

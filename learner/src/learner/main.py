@@ -11,6 +11,8 @@ logger = logging.getLogger("learner.main")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from learner.environment import RustMultiSnakeVecEnv, MultiProcRustVecEnv
+from learner.policy import GridCnnExtractor
+from learner.constants import SNAKE_GRID1, SNAKE_GRID2
 from stable_baselines3 import PPO
 
 def main():
@@ -123,7 +125,11 @@ def main():
             model = PPO(
                 "MlpPolicy",
                 env,
-                policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+                policy_kwargs=dict(
+                    features_extractor_class=GridCnnExtractor,
+                    features_extractor_kwargs=dict(grid1=SNAKE_GRID1, grid2=SNAKE_GRID2),
+                    net_arch=dict(pi=[256, 256], vf=[256, 256]),
+                ),
                 verbose=1,
                 device="cpu",
                 batch_size=4096,

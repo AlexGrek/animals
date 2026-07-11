@@ -11,6 +11,8 @@ logger = logging.getLogger("learner.train_prey")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from learner.prey_environment import RustPreyVecEnv
+from learner.policy import GridCnnExtractor
+from learner.constants import PREY_GRID1, PREY_GRID2
 from stable_baselines3 import PPO
 
 def main():
@@ -41,16 +43,22 @@ def main():
         )
 
         logger.info("Initializing PPO agent for PREY with device='cpu'...")
-        # Prey observation is small (64 floats), smaller MLP is faster and sufficient
+        # The observation holds two 8x8 grids; a small CNN encoder preserves their
+        # spatial structure, then a compact MLP head maps to the 5 discrete moves.
         model = PPO(
             "MlpPolicy",
             env,
-            policy_kwargs=dict(net_arch=dict(pi=[128, 128], vf=[128, 128])),
+            policy_kwargs=dict(
+                features_extractor_class=GridCnnExtractor,
+                features_extractor_kwargs=dict(grid1=PREY_GRID1, grid2=PREY_GRID2),
+                net_arch=dict(pi=[128, 128], vf=[128, 128]),
+            ),
             verbose=1,
             device="cpu",
             batch_size=2048,
             n_steps=512,
             ent_coef=0.02, # Reward now includes threat-distance shaping (dense signal), so less entropy is needed to find escape routes than with pure sparse survival reward.
+            gamma=0.995,   # Match the snake's horizon; prey lifespans run 200-500 steps, so survival is a long-horizon objective.
         )
         
         logger.info(f"Starting Prey training for {args.steps} steps...")
