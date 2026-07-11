@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from learner.prey_environment import RustPreyVecEnv
 from learner.policy import GridCnnExtractor
-from learner.constants import PREY_GRID1, PREY_GRID2
+from learner.constants import PREY_GRID1, PREY_GRID2, PREY_OBS_SIZE, PREY_NUM_ACTIONS
 from stable_baselines3 import PPO
 
 def main():
@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--snakes-per-game", type=int, default=2, help="Number of snakes per game instance.")
     parser.add_argument("--preys-per-game", type=int, default=2, help="Number of preys per game instance.")
     parser.add_argument("--max-preys", type=int, default=20, help="Max preys per game instance.")
+    parser.add_argument("--num-procs", type=int, default=1, help="Number of background processes to spawn for environment stepping.")
     parser.add_argument("--snake-model", type=str, default="models/snake_model.zip", help="Path to snake model to use as predator.")
     parser.add_argument("--model-path", type=str, default="models/prey_model.zip", help="Path to save the prey model.")
 
@@ -33,14 +34,36 @@ def main():
         args.snake_model = resolve_model_path(args.snake_model) or normalize_model_path(args.snake_model)
 
     try:
-        logger.info(f"Creating Prey Vector Env with {args.num_games} games...")
-        env = RustPreyVecEnv(
-            num_games=args.num_games,
-            snakes_per_game=args.snakes_per_game,
-            preys_per_game=args.preys_per_game,
-            max_preys=args.max_preys,
-            snake_model_path=args.snake_model
-        )
+        if args.num_games % args.num_procs != 0:
+            raise ValueError(f"--num-games ({args.num_games}) must be evenly divisible by --num-procs ({args.num_procs}).")
+        games_per_proc = args.num_games // args.num_procs
+
+        # Cap PyTorch's per-process thread pool so the main process and every
+        # worker (each of which loads its own copy of the frozen snake model)
+        # don't all independently claim every physical core and thrash.
+        import torch
+        threads = max(1, (os.cpu_count() or 4) // (args.num_procs + 1)) if args.num_procs > 1 else (os.cpu_count() or 4)
+        torch.set_num_threads(threads)
+
+        logger.info(f"Creating Prey Vector Env with {args.num_games} games across {args.num_procs} process(es) ({threads} torch threads/process)...")
+
+        def make_env_fn(proc_idx):
+            def _init():
+                return RustPreyVecEnv(
+                    num_games=games_per_proc,
+                    snakes_per_game=args.snakes_per_game,
+                    preys_per_game=args.preys_per_game,
+                    max_preys=args.max_preys,
+                    snake_model_path=args.snake_model,
+                )
+            return _init
+
+        if args.num_procs == 1:
+            env = make_env_fn(0)()
+        else:
+            from learner.environment import MultiProcRustVecEnv
+            env_fns = [make_env_fn(i) for i in range(args.num_procs)]
+            env = MultiProcRustVecEnv(env_fns, obs_size=PREY_OBS_SIZE, num_actions=PREY_NUM_ACTIONS, threads_per_proc=threads)
 
         logger.info("Initializing PPO agent for PREY with device='cpu'...")
         # The observation holds two 8x8 grids; a small CNN encoder preserves their

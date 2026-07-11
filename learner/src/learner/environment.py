@@ -224,8 +224,16 @@ class RustMultiSnakeVecEnv(VecEnv):
     def env_is_wrapped(self, wrapper_class: type, indices=None) -> list[bool]:
         return [False] * self.num_envs
 
-def _worker(remote, parent_remote, env_fn_wrapper):
+def _worker(remote, parent_remote, env_fn_wrapper, num_threads: Optional[int] = None):
     parent_remote.close()
+    if num_threads is not None:
+        # Each worker loads its own copy of any frozen opponent model and runs
+        # PyTorch inference on it; without an explicit cap every worker (plus
+        # the main process) independently sizes its intra-op thread pool to
+        # all physical cores, wildly oversubscribing the machine once more
+        # than one process is running. See `MultiProcRustVecEnv`.
+        import torch
+        torch.set_num_threads(max(1, num_threads))
     env = env_fn_wrapper.var()
     try:
         while True:
@@ -238,7 +246,11 @@ def _worker(remote, parent_remote, env_fn_wrapper):
                 obs = env.reset()
                 remote.send(obs)
             elif cmd == 'get_training_count':
-                remote.send(env.training_count)
+                # `num_envs` already equals the per-process training count for
+                # every VecEnv subclass here (snake splits train/existing via
+                # `training_count`; prey/amphibia train every slot), so this
+                # works generically without each env needing that attribute.
+                remote.send(env.num_envs)
             elif cmd == 'close':
                 env.close()
                 remote.close()
@@ -264,26 +276,43 @@ class CloudpickleWrapper:
 
 class MultiProcRustVecEnv(VecEnv):
     """
-    Multiprocessing wrapper that distributes RustMultiSnakeVecEnv across multiple Python processes.
-    This effectively uses multiple CPU cores to step the environments and generate actions for the static models.
+    Multiprocessing wrapper that distributes any of this module's Rust-backed
+    VecEnvs (snake, prey, or amphibia) across multiple Python processes. This
+    effectively uses multiple CPU cores to step the environments and generate
+    actions for the static/frozen opponent models.
     """
-    def __init__(self, env_fns: List[Callable[[], RustMultiSnakeVecEnv]]):
+    def __init__(
+        self,
+        env_fns: List[Callable[[], VecEnv]],
+        obs_size: int = SNAKE_OBS_SIZE,
+        num_actions: int = SNAKE_NUM_ACTIONS,
+        threads_per_proc: Optional[int] = None,
+    ):
         self.waiting = False
         self.closed = False
         self.num_procs = len(env_fns)
-        
+
+        if threads_per_proc is None:
+            # Split the machine's cores across the main process (which also
+            # runs a PyTorch model) and every worker, rather than letting each
+            # of them default to a full-core thread pool and oversubscribe.
+            threads_per_proc = max(1, (os.cpu_count() or 4) // (self.num_procs + 1))
+
         self.remotes, self.work_remotes = zip(*[mp.Pipe() for _ in range(self.num_procs)])
         self.processes = []
         for work_remote, remote, env_fn in zip(self.work_remotes, self.remotes, env_fns):
-            process = mp.Process(target=_worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
+            process = mp.Process(
+                target=_worker,
+                args=(work_remote, remote, CloudpickleWrapper(env_fn), threads_per_proc),
+            )
             process.daemon = True
             process.start()
             self.processes.append(process)
             work_remote.close()
-            
-        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(SNAKE_OBS_SIZE,), dtype=np.float32)
-        action_space = spaces.Discrete(SNAKE_NUM_ACTIONS)
-        
+
+        observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
+        action_space = spaces.Discrete(num_actions)
+
         self.training_counts = []
         for remote in self.remotes:
             remote.send(('get_training_count', None))
@@ -298,12 +327,12 @@ class MultiProcRustVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         
         if self.num_envs == 0:
-            return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32)
+            return np.zeros((0, self.observation_space.shape[0]), dtype=np.float32)
 
         # We need to filter out empty arrays (e.g. if a proc has 0 training count)
         valid_results = [r for r in results if len(r) > 0]
         if not valid_results:
-             return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32)
+             return np.zeros((0, self.observation_space.shape[0]), dtype=np.float32)
         return np.concatenate(valid_results)
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -326,7 +355,7 @@ class MultiProcRustVecEnv(VecEnv):
             merged_infos.extend(info_list)
             
         if self.num_envs == 0:
-             return np.zeros((0, SNAKE_OBS_SIZE), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
+             return np.zeros((0, self.observation_space.shape[0]), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool), []
 
         return np.concatenate([o for o in obs_list if len(o) > 0]), \
                np.concatenate([r for r in rews_list if len(r) > 0]), \
