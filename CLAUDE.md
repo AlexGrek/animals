@@ -60,4 +60,4 @@ The **snake observation size** (`SNAKE_OBS_SIZE = 69`: 8×8 relative grid + smel
 
 Changing either observation size also invalidates saved checkpoints in `learner/models/` (SB3 load will fail on shape mismatch) — retrain or delete them. A frozen counterpart model with a stale shape is treated as "missing" and falls back to a static action rather than crashing (`model_utils.load_opponent`).
 
-Grid size (100×100) is duplicated in `animals_simulation/src/lib.rs` (`GameState::new(100, 100, ...)`) and `animals_game/src/main.rs` (`GRID_WIDTH`/`GRID_HEIGHT` constants).
+Grid size (400×400) is duplicated in `animals_simulation/src/lib.rs` (`GameState::new(400, 400, ...)`) and `animals_game/src/main.rs` (`GRID_WIDTH`/`GRID_HEIGHT` constants).

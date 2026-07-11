@@ -23,10 +23,10 @@ def main():
     parser.add_argument("--num-procs", type=int, default=1, help="Number of background processes to spawn for environment stepping.")
     parser.add_argument("--model-path", type=str, default="models/snake_model.zip", help="Path to save the model.")
     parser.add_argument("--existing", action="append", type=str, help="Existing model config in format path:count, e.g. models/v1.zip:4")
-    parser.add_argument("--preys-per-game", type=int, default=2, help="Number of initial (land) prey per game instance.")
-    parser.add_argument("--max-preys", type=int, default=20, help="Maximum number of land prey per game instance (pool size).")
-    parser.add_argument("--amphibias-per-game", type=int, default=1, help="Number of initial amphibia per game instance.")
-    parser.add_argument("--max-amphibias", type=int, default=20, help="Maximum number of amphibia per game instance (pool size).")
+    parser.add_argument("--preys-per-game", type=int, default=32, help="Number of initial (land) prey per game instance.")
+    parser.add_argument("--max-preys", type=int, default=100, help="Maximum number of land prey per game instance (pool size).")
+    parser.add_argument("--amphibias-per-game", type=int, default=16, help="Number of initial amphibia per game instance.")
+    parser.add_argument("--max-amphibias", type=int, default=100, help="Maximum number of amphibia per game instance (pool size).")
     parser.add_argument("--prey-model", type=str, default="models/prey_model.zip", help="Path to the frozen prey model (falls back to static prey if missing).")
     parser.add_argument("--amphibia-model", type=str, default="models/amphibia_model.zip", help="Path to the frozen amphibia model (falls back to static amphibia if missing).")
     parser.add_argument("--resume", action="store_true", help="Resume training from model-path if it exists.")
@@ -134,7 +134,7 @@ def main():
                 device="cpu",
                 batch_size=4096,
                 n_steps=512,
-                ent_coef=0.03,
+                ent_coef=0.01,
                 gamma=0.995,
             )
         

@@ -12,7 +12,7 @@ from learner.model_utils import load_opponent, predict_actions
 
 
 class RustPreyVecEnv(VecEnv):
-    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, preys_per_game: int = 1, max_preys: int = 20, snake_model_path: str = "models/snake_model.zip"):
+    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, preys_per_game: int = 32, max_preys: int = 100, snake_model_path: str = "models/snake_model.zip"):
         self.num_games = num_games
         self.snakes_per_game = snakes_per_game
         self.preys_per_game = preys_per_game

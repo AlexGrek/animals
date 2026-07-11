@@ -52,4 +52,4 @@ The **66-float observation** (8×8 relative grid + 2 food-direction floats) and 
 
 Changing the observation also invalidates saved checkpoints in `learner/models/` (SB3 load will fail on shape mismatch) — retrain or delete them.
 
-Grid size (100×100) is duplicated in `animals_simulation/src/lib.rs` (`GameState::new(100, 100, ...)`) and `animals_game/src/main.rs` (`GRID_WIDTH`/`GRID_HEIGHT` constants).
+Grid size (400×400) is duplicated in `animals_simulation/src/lib.rs` (`GameState::new(400, 400, ...)`) and `animals_game/src/main.rs` (`GRID_WIDTH`/`GRID_HEIGHT` constants).

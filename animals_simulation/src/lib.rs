@@ -82,7 +82,7 @@ impl Simulation {
     #[new]
     fn new(num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize) -> Self {
         Self {
-            game_state: GameState::new(100, 100, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true),
+            game_state: GameState::new(400, 400, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true),
             num_snakes,
             initial_preys,
             max_preys,
@@ -93,7 +93,7 @@ impl Simulation {
     }
 
     fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
-        self.game_state = GameState::new(100, 100, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true);
+        self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true);
         self.visited = vec![HashSet::new(); self.num_snakes];
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {

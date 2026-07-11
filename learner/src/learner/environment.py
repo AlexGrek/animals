@@ -34,8 +34,8 @@ class RustMultiSnakeVecEnv(VecEnv):
 
     def __init__(self, num_games: int = 4, snakes_per_game: int = 2, training_count: Optional[int] = None,
                  existing_models: Optional[Dict[str, int]] = None,
-                 preys_per_game: int = 1, max_preys: int = 20, 
-                 amphibias_per_game: int = 1, max_amphibias: int = 20,
+                 preys_per_game: int = 32, max_preys: int = 100, 
+                 amphibias_per_game: int = 16, max_amphibias: int = 100,
                  prey_model_path: Optional[str] = "models/prey_model.zip",
                  amphibia_model_path: Optional[str] = "models/amphibia_model.zip"):
         self.num_games = num_games
@@ -147,10 +147,10 @@ class RustMultiSnakeVecEnv(VecEnv):
 
         prey_per_game, amphibia_per_game = [], []
         for i in range(self.num_games):
-            p0 = i * self.preys_per_game
-            a0 = i * self.amphibias_per_game
-            prey_per_game.append(prey_flat[p0:p0 + self.preys_per_game])
-            amphibia_per_game.append(amphibia_flat[a0:a0 + self.amphibias_per_game])
+            p0 = i * self.max_preys
+            a0 = i * self.max_amphibias
+            prey_per_game.append(prey_flat[p0:p0 + self.max_preys])
+            amphibia_per_game.append(amphibia_flat[a0:a0 + self.max_amphibias])
         return prey_per_game, amphibia_per_game
 
     def step_wait(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[Dict[str, Any]]]:
