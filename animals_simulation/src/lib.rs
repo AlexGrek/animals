@@ -283,8 +283,12 @@ impl Simulation {
                     },
                     _ => (0.0, 0.0),
                 };
+                let mut base = 0.1;
+                if all_prey_actions[idx] == 0 {
+                    base -= 0.2; // punish standing still
+                }
                 
-                0.1 + shaping + penalty + shaping_crowding
+                base + shaping + penalty + shaping_crowding
             }
         };
 
