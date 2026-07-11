@@ -28,7 +28,7 @@ tasks:
     vars:
       STEPS: '{{default "100000" .STEPS}}'
     cmds:
-      - PYTHONPATH=src uv run python -m learner.main --steps {{.STEPS}}
+      - PYTHONPATH=src uv run python -m learner.main --steps {{.STEPS}} --preys-per-game 8 --amphibias-per-game 4
 
   train-prey:
     desc: "Train the prey ML model against a frozen snake model. Usage: task train-prey STEPS=1000000"

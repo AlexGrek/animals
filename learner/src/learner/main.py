@@ -124,7 +124,8 @@ def main():
                 device="cpu",
                 batch_size=4096,
                 n_steps=512,
-                ent_coef=0.01,
+                ent_coef=0.03,
+                gamma=0.995,
             )
         
         logger.info(f"Starting training for {args.steps} steps...")

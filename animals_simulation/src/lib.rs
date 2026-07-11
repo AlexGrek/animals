@@ -186,11 +186,14 @@ impl Simulation {
                     // Exploration bonus: only when nothing is smelled (smell ->
                     // pursue via shaping above, no smell -> explore), reward
                     // entering a not-yet-visited coarse (4x4) grid cell.
+                    // If no new cell is entered, penalize slightly to discourage spinning.
                     if cur_smell.is_none() {
                         let head = snake.body[0];
                         let coarse = (head.0 / 4, head.1 / 4);
                         if self.visited[i].insert(coarse) {
-                            r += 0.05;
+                            r += 0.1;
+                        } else {
+                            r -= 0.03;
                         }
                     }
                 }
