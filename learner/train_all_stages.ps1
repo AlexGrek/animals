@@ -13,7 +13,7 @@
 # Requires `uv` (https://docs.astral.sh/uv/) and a Rust toolchain on PATH.
 
 param(
-    [int]$Steps = 8000000
+    [int]$Steps = 1000000
 )
 
 # Abort on the first failing command (mirrors `set -e`).

@@ -5,12 +5,59 @@ import socket
 import struct
 import sys
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 
 from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE
+# Ensure the custom feature extractor class is importable when SB3 unpickles a
+# checkpoint's policy_kwargs (the class is referenced by name inside the .zip).
+import learner.policy  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("learner.play")
+
+# --- Neural-net activation streaming for the Bevy overlay -------------------
+# For the ONE snake selected in the visualizer we stream a fixed-length vector
+# of per-tick layer activations. Layout (must match `animals_game/src/main.rs`):
+#   [128 cnn-feature outputs][256 policy_net Tanh-0][256 policy_net Tanh-1][3 action logits]
+# = 643 floats. See CLAUDE.md "cross-language invariants".
+_ACT_LAYERS = ("features", "pi0", "pi1", "logits")
+_ACT_LEN = 128 + 256 + 256 + 3  # 643
+
+
+def register_activation_hooks(model):
+    """Attach forward hooks to a snake PPO model, returning a dict that always
+    holds the most recent forward pass's activations (flattened per layer)."""
+    store = {}
+
+    def make_hook(name):
+        def hook(_module, _inp, out):
+            store[name] = out.detach().cpu().numpy().reshape(-1)
+        return hook
+
+    policy = model.policy
+    # `features_extractor.linear` is the CNN head (Linear(2048->128)+ReLU) => 128.
+    policy.features_extractor.linear.register_forward_hook(make_hook("features"))
+    # policy_net = [Linear, Tanh, Linear, Tanh]; hook the two Tanh outputs (256 each).
+    policy.mlp_extractor.policy_net[1].register_forward_hook(make_hook("pi0"))
+    policy.mlp_extractor.policy_net[3].register_forward_hook(make_hook("pi1"))
+    policy.action_net.register_forward_hook(make_hook("logits"))  # 3 logits
+    return store
+
+
+def activation_blob(store):
+    """Concatenate the hooked layers into the fixed 643-float vector, or return
+    an empty array if any layer hasn't fired yet."""
+    parts = []
+    for k in _ACT_LAYERS:
+        v = store.get(k)
+        if v is None:
+            return np.empty(0, dtype=np.float32)
+        parts.append(np.asarray(v, dtype=np.float32).reshape(-1))
+    blob = np.concatenate(parts).astype(np.float32)
+    if blob.shape[0] != _ACT_LEN:
+        logger.warning("Activation blob size %d != expected %d", blob.shape[0], _ACT_LEN)
+    return blob
 
 def main():
     parser = argparse.ArgumentParser(description="TCP Inference Server for Bevy Game")
@@ -51,10 +98,12 @@ def main():
 
     models = []
     loaded_models = {}
+    snake_stores = {}  # path -> activation store (for the NN overlay)
     for path in model_paths:
         if path not in loaded_models:
             logger.info(f"Loading snake model from {path}...")
             loaded_models[path] = PPO.load(path)
+            snake_stores[path] = register_activation_hooks(loaded_models[path])
         models.append(loaded_models[path])
 
     # Handle multiple prey models
@@ -142,10 +191,10 @@ def main():
 
             try:
                 while True:
-                    header = recvall(conn, 12)
+                    header = recvall(conn, 16)
                     if not header:
                         break
-                    num_snakes, num_preys, num_amphibias = struct.unpack('<3i', header)
+                    num_snakes, num_preys, num_amphibias, selected = struct.unpack('<4i', header)
 
                     bytes_expected = (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
                     floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
@@ -195,7 +244,20 @@ def main():
                                     amphibia_action_map[i] = int(a)
                     actions.extend(amphibia_action_map[i] for i in range(num_amphibias))
 
+                    # For the selected snake only, run one extra single-row
+                    # forward so the hooks capture just that snake's activations,
+                    # and append them length-prefixed to the response.
+                    sel_blob = np.empty(0, dtype=np.float32)
+                    if 0 <= selected < num_snakes:
+                        sel_path = model_paths[selected]
+                        sel_model = loaded_models[sel_path]
+                        sel_model.predict(snake_obs[selected:selected + 1], deterministic=True)
+                        sel_blob = activation_blob(snake_stores[sel_path])
+
                     response = struct.pack(f'<{num_snakes + num_preys + num_amphibias}i', *actions)
+                    response += struct.pack('<i', int(sel_blob.shape[0]))
+                    if sel_blob.shape[0]:
+                        response += struct.pack(f'<{sel_blob.shape[0]}f', *sel_blob)
                     conn.sendall(response)
 
             except ConnectionResetError:

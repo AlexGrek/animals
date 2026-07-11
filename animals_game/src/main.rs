@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::math::Isometry2d;
 use bevy::window::PresentMode;
 use bevy::input::mouse::MouseWheel;
 use animals_engine::{GameState, RelativeAction, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
@@ -34,14 +35,40 @@ struct TickTimer(pub Timer);
 /// thread so it can never stall the render loop; the main thread only does
 /// non-blocking channel sends/receives.
 struct AiWorkerHandle {
-    obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize)>,
-    act_rx: crossbeam_channel::Receiver<Vec<i32>>,
+    /// `(observations, num_snakes, num_preys, num_amphibias, selected_snake)`.
+    /// `selected_snake` is the index whose NN activations we want back, or -1.
+    obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize, i32)>,
+    act_rx: crossbeam_channel::Receiver<WorkerReply>,
     /// True while a request is in flight and we're waiting for its actions.
     awaiting: bool,
 }
 
+/// One tick's response from the Python worker: the actions for every actor plus
+/// (optionally) the selected snake's flattened NN activations.
+struct WorkerReply {
+    actions: Vec<i32>,
+    /// Layout mirrors `learner/play.py`: [128 features][256 pi0][256 pi1][3 logits].
+    /// Empty when no snake is selected.
+    activations: Vec<f32>,
+}
+
 #[derive(Resource, Default)]
 struct AiWorker(Option<AiWorkerHandle>);
+
+/// Index of the snake whose neural net is shown in the overlay (`None` = hidden).
+#[derive(Resource, Default)]
+struct SelectedSnake(Option<usize>);
+
+/// Latest activation vector for the selected snake (see [`WorkerReply`]).
+#[derive(Resource, Default)]
+struct ActivationBuffer(Vec<f32>);
+
+/// Fixed activation-vector layout streamed from `learner/play.py`. Keep in sync.
+const NN_FEATURES: usize = 128;
+const NN_PI0: usize = 256;
+const NN_PI1: usize = 256;
+const NN_LOGITS: usize = 3;
+const NN_ACT_LEN: usize = NN_FEATURES + NN_PI0 + NN_PI1 + NN_LOGITS; // 643
 
 /// Snapshot of every actor's position as of the START of the most recent
 /// `step()` call, i.e. where it was a moment before the current tick's
@@ -149,11 +176,13 @@ fn update_particles(
 struct OverlaySettings {
     show_names: bool,
     show_targets: bool,
+    /// Master toggle for the NN overlay panel (still requires a selected snake).
+    show_nn: bool,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
-        Self { show_names: false, show_targets: false }
+        Self { show_names: false, show_targets: false, show_nn: true }
     }
 }
 
@@ -161,7 +190,35 @@ impl Default for OverlaySettings {
 enum ToolbarButton {
     ToggleNames,
     ToggleTargets,
+    ToggleNn,
 }
+
+/// Which layer of the NN a given overlay cell belongs to.
+#[derive(Clone, Copy, PartialEq)]
+enum NnLayer {
+    InputEntity,
+    InputGrass,
+    Scalars,
+    Features,
+    Pi0,
+    Pi1,
+    Action,
+}
+
+/// A single colored cell in the NN overlay, addressed by layer + index.
+#[derive(Component)]
+struct NnCell {
+    layer: NnLayer,
+    index: usize,
+}
+
+/// Root node of the NN overlay panel (toggled via `Node.display`).
+#[derive(Component)]
+struct NnPanel;
+
+/// The text line under the panel showing the chosen action + probability.
+#[derive(Component)]
+struct NnActionText;
 
 #[derive(Component)]
 struct SnakeHead {
@@ -320,6 +377,8 @@ fn main() {
         .insert_resource(AppStatus::Running)
         .insert_resource(PrevPositions::default())
         .insert_resource(OverlaySettings::default())
+        .insert_resource(SelectedSnake::default())
+        .insert_resource(ActivationBuffer::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -336,6 +395,7 @@ fn main() {
                 toolbar_interaction,
                 toolbar_colors,
                 draw_targets_overlay,
+                update_nn_overlay,
             )
                 .chain(),
         )
@@ -361,22 +421,32 @@ fn gather_observations(game: &GameState) -> Vec<f32> {
     obs
 }
 
+/// The selected snake index as an i32 for the wire protocol (-1 = none / out of
+/// range), i.e. the snake whose NN activations the Python server should return.
+fn selected_i32(selected: &SelectedSnake, num_snakes: usize) -> i32 {
+    match selected.0 {
+        Some(i) if i < num_snakes => i as i32,
+        _ => -1,
+    }
+}
+
 /// Spawns the background thread that owns `stream` and services inference
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
 fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize, total_amphibias: usize) -> AiWorkerHandle {
-    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize)>();
-    let (act_tx, act_rx) = crossbeam_channel::unbounded::<Vec<i32>>();
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, i32)>();
+    let (act_tx, act_rx) = crossbeam_channel::unbounded::<WorkerReply>();
 
     std::thread::spawn(move || {
-        while let Ok((obs, num_snakes, num_preys, num_amphibias)) = obs_rx.recv() {
-            let mut payload = vec![0u8; 12 + obs.len() * 4];
+        while let Ok((obs, num_snakes, num_preys, num_amphibias, selected)) = obs_rx.recv() {
+            let mut payload = vec![0u8; 16 + obs.len() * 4];
             payload[0..4].copy_from_slice(&(num_snakes as i32).to_le_bytes());
             payload[4..8].copy_from_slice(&(num_preys as i32).to_le_bytes());
             payload[8..12].copy_from_slice(&(num_amphibias as i32).to_le_bytes());
+            payload[12..16].copy_from_slice(&selected.to_le_bytes());
 
             for (i, &val) in obs.iter().enumerate() {
-                payload[12 + i * 4..12 + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+                payload[16 + i * 4..16 + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
             }
             if stream.write_all(&payload).is_err() {
                 break;
@@ -393,7 +463,26 @@ fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize, total_amphibias: u
                 let off = s * 4;
                 actions.push(i32::from_le_bytes(action_bytes[off..off + 4].try_into().unwrap()));
             }
-            if act_tx.send(actions).is_err() {
+
+            // Length-prefixed activation blob for the selected snake (may be 0).
+            let mut count_bytes = [0u8; 4];
+            if stream.read_exact(&mut count_bytes).is_err() {
+                break;
+            }
+            let count = i32::from_le_bytes(count_bytes).max(0) as usize;
+            let mut activations = Vec::with_capacity(count);
+            if count > 0 {
+                let mut act_f_bytes = vec![0u8; count * 4];
+                if stream.read_exact(&mut act_f_bytes).is_err() {
+                    break;
+                }
+                for k in 0..count {
+                    let off = k * 4;
+                    activations.push(f32::from_le_bytes(act_f_bytes[off..off + 4].try_into().unwrap()));
+                }
+            }
+
+            if act_tx.send(WorkerReply { actions, activations }).is_err() {
                 break;
             }
         }
@@ -553,11 +642,104 @@ fn setup(
                     TextColor(Color::WHITE),
                 ));
             });
+
+            parent.spawn((
+                Button,
+                Node {
+                    width: Val::Px(40.0),
+                    height: Val::Px(40.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.2, 0.2)),
+                ToolbarButton::ToggleNn,
+            )).with_children(|parent| {
+                parent.spawn((
+                    Text::new("A"),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+            });
         });
+
+    spawn_nn_overlay(&mut commands);
 
     if is_ai {
         spawn_ai_server(&mut commands, &args, num_snakes, &mut status);
     }
+}
+
+/// Specs for each NN-overlay layer: (label, layer id, cell count, columns, cell px).
+const NN_LAYER_SPECS: [(&str, NnLayer, usize, usize, f32); 7] = [
+    ("input: entity 8x8", NnLayer::InputEntity, 64, 8, 12.0),
+    ("input: grass 8x8", NnLayer::InputGrass, 64, 8, 12.0),
+    ("scalars (smell x/y, dist, hunger, len)", NnLayer::Scalars, 5, 5, 16.0),
+    ("cnn features (128)", NnLayer::Features, NN_FEATURES, 16, 9.0),
+    ("policy layer 1 - tanh (256)", NnLayer::Pi0, NN_PI0, 16, 8.0),
+    ("policy layer 2 - tanh (256)", NnLayer::Pi1, NN_PI1, 16, 8.0),
+    ("action logits (straight/right/left)", NnLayer::Action, NN_LOGITS, 3, 22.0),
+];
+
+/// Spawns the NN overlay panel once (top-right). Cells are recolored every tick
+/// by `update_nn_overlay`; the panel is shown/hidden via its `Node.display`.
+fn spawn_nn_overlay(commands: &mut Commands) {
+    commands
+        .spawn((
+            NnPanel,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(8.0),
+                right: Val::Px(8.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("Neural net"),
+                TextFont { font_size: 14.0, ..default() },
+                TextColor(Color::WHITE),
+            ));
+            for (label, layer, count, cols, cell) in NN_LAYER_SPECS {
+                parent.spawn((
+                    Text::new(label),
+                    TextFont { font_size: 10.0, ..default() },
+                    TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                ));
+                parent
+                    .spawn(Node {
+                        width: Val::Px(cols as f32 * (cell + 1.0) + 2.0),
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        ..default()
+                    })
+                    .with_children(|grid| {
+                        for i in 0..count {
+                            grid.spawn((
+                                Node {
+                                    width: Val::Px(cell),
+                                    height: Val::Px(cell),
+                                    margin: UiRect::all(Val::Px(0.5)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.05, 0.05, 0.05)),
+                                NnCell { layer, index: i },
+                            ));
+                        }
+                    });
+            }
+            parent.spawn((
+                Text::new(""),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(Color::srgb(1.0, 0.8, 0.2)),
+                NnActionText,
+            ));
+        });
 }
 
 /// Spawns the Python inference server as a child process and wires up the
@@ -734,7 +916,37 @@ fn keyboard_input(
     mut status: ResMut<AppStatus>,
     ai_server: Option<Res<AiServerProcess>>,
     mut images: ResMut<Assets<Image>>,
+    mut selected: ResMut<SelectedSnake>,
 ) {
+    // --- NN-overlay snake selection: number keys pick a snake, Tab cycles,
+    // 0/Esc hides the overlay. ---
+    let num_snakes = engine.0.snakes.len();
+    const DIGIT_KEYS: [(KeyCode, usize); 18] = [
+        (KeyCode::Digit1, 0), (KeyCode::Digit2, 1), (KeyCode::Digit3, 2),
+        (KeyCode::Digit4, 3), (KeyCode::Digit5, 4), (KeyCode::Digit6, 5),
+        (KeyCode::Digit7, 6), (KeyCode::Digit8, 7), (KeyCode::Digit9, 8),
+        (KeyCode::Numpad1, 0), (KeyCode::Numpad2, 1), (KeyCode::Numpad3, 2),
+        (KeyCode::Numpad4, 3), (KeyCode::Numpad5, 4), (KeyCode::Numpad6, 5),
+        (KeyCode::Numpad7, 6), (KeyCode::Numpad8, 7), (KeyCode::Numpad9, 8),
+    ];
+    for (key, idx) in DIGIT_KEYS {
+        if keyboard_input.just_pressed(key) && idx < num_snakes {
+            selected.0 = Some(idx);
+        }
+    }
+    if keyboard_input.just_pressed(KeyCode::Digit0)
+        || keyboard_input.just_pressed(KeyCode::Numpad0)
+        || keyboard_input.just_pressed(KeyCode::Escape)
+    {
+        selected.0 = None;
+    }
+    if keyboard_input.just_pressed(KeyCode::Tab) && num_snakes > 0 {
+        selected.0 = Some(match selected.0 {
+            Some(i) => (i + 1) % num_snakes,
+            None => 0,
+        });
+    }
+
     if keyboard_input.just_pressed(KeyCode::Space) {
         // Restart the game — works whether it's still running, over, or the
         // AI server failed.
@@ -869,6 +1081,8 @@ fn game_tick(
     status: Res<AppStatus>,
     mut dirty: ResMut<RenderDirty>,
     mut prev: ResMut<PrevPositions>,
+    selected: Res<SelectedSnake>,
+    mut act_buffer: ResMut<ActivationBuffer>,
 ) {
     // Don't advance the game while still loading or after a fatal error.
     if !matches!(*status, AppStatus::Running) {
@@ -898,7 +1112,8 @@ fn game_tick(
             let num_snakes = engine.0.snakes.len();
             let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
             let num_preys = engine.0.preys.len() - num_amphibias;
-            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias)).is_err() {
+            let sel = selected_i32(&selected, num_snakes);
+            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, sel)).is_err() {
                 eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
@@ -907,7 +1122,8 @@ fn game_tick(
         }
 
         match worker.act_rx.try_recv() {
-            Ok(actions) => {
+            Ok(WorkerReply { actions, activations }) => {
+                act_buffer.0 = activations;
                 let num_snakes = engine.0.snakes.len();
                 for s in 0..num_snakes {
                     if let Some(&a) = actions.get(s) {
@@ -967,7 +1183,8 @@ fn game_tick(
             let num_snakes = engine.0.snakes.len();
             let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
             let num_preys = engine.0.preys.len() - num_amphibias;
-            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias)).is_err() {
+            let sel = selected_i32(&selected, num_snakes);
+            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, sel)).is_err() {
                 eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
@@ -1145,6 +1362,7 @@ fn toolbar_interaction(
             match button {
                 ToolbarButton::ToggleNames => settings.show_names = !settings.show_names,
                 ToolbarButton::ToggleTargets => settings.show_targets = !settings.show_targets,
+                ToolbarButton::ToggleNn => settings.show_nn = !settings.show_nn,
             }
         }
     }
@@ -1158,6 +1376,7 @@ fn toolbar_colors(
         let is_active = match button {
             ToolbarButton::ToggleNames => settings.show_names,
             ToolbarButton::ToggleTargets => settings.show_targets,
+            ToolbarButton::ToggleNn => settings.show_nn,
         };
 
         match *interaction {
@@ -1178,9 +1397,23 @@ fn draw_targets_overlay(
     mut gizmos: Gizmos,
     settings: Res<OverlaySettings>,
     engine: Res<GameEngine>,
+    selected: Res<SelectedSnake>,
     head_query: Query<(&SnakeHead, &Transform)>,
     apple_query: Query<(&Apple, &Transform)>,
 ) {
+    // Ring the selected snake's head so it's clear which net the overlay shows.
+    if let Some(sel) = selected.0 {
+        for (head, transform) in &head_query {
+            if head.snake_idx == sel {
+                gizmos.circle_2d(
+                    Isometry2d::from_translation(transform.translation.truncate()),
+                    TILE_SIZE * 2.0,
+                    Color::srgb(1.0, 1.0, 0.0),
+                );
+            }
+        }
+    }
+
     if !settings.show_targets {
         return;
     }
@@ -1196,11 +1429,121 @@ fn draw_targets_overlay(
         if let Some(target_idx) = snake.tracked_target {
             if let Some(&prey_pos) = prey_transforms.get(&target_idx) {
                 gizmos.line_2d(
-                    transform.translation.truncate(), 
-                    prey_pos, 
+                    transform.translation.truncate(),
+                    prey_pos,
                     Color::srgba(1.0, 0.0, 0.0, 0.6)
                 );
             }
         }
+    }
+}
+
+/// Maps a per-layer-normalized activation (~[-1,1]) to a diverging color:
+/// negative -> blue, ~0 -> near-black, positive -> orange.
+fn activation_color(t: f32) -> Color {
+    let t = t.clamp(-1.0, 1.0);
+    if t >= 0.0 {
+        Color::srgb(0.05 + 0.95 * t, 0.05 + 0.55 * t, 0.05)
+    } else {
+        let a = -t;
+        Color::srgb(0.05, 0.05 + 0.45 * a, 0.05 + 0.95 * a)
+    }
+}
+
+/// Largest absolute value in a slice, floored at a small epsilon, so each layer
+/// can be normalized to full contrast without dividing by zero.
+fn max_abs(s: &[f32]) -> f32 {
+    s.iter().fold(1e-6_f32, |m, &v| m.max(v.abs()))
+}
+
+/// Recolors the NN overlay cells each frame from the selected snake's local
+/// observation (input layers) and the streamed activation buffer (hidden layers
+/// + action logits), and toggles the panel's visibility.
+fn update_nn_overlay(
+    selected: Res<SelectedSnake>,
+    settings: Res<OverlaySettings>,
+    engine: Res<GameEngine>,
+    buffer: Res<ActivationBuffer>,
+    mut panel_q: Query<&mut Node, With<NnPanel>>,
+    mut cell_q: Query<(&NnCell, &mut BackgroundColor)>,
+    mut action_text_q: Query<&mut Text, With<NnActionText>>,
+) {
+    let sel = selected.0.filter(|&i| i < engine.0.snakes.len());
+    let show = sel.is_some() && settings.show_nn;
+    for mut node in &mut panel_q {
+        node.display = if show { Display::Flex } else { Display::None };
+    }
+    let Some(sel) = sel else { return };
+    if !settings.show_nn {
+        return;
+    }
+
+    // Input layers are recomputed locally (not sent over the wire).
+    let obs = engine.0.get_relative_observation(sel);
+    let entity = &obs[0..64];
+    let scalars = &obs[64..69];
+    let grass = &obs[69..133];
+
+    // Hidden-layer activations + logits come from the Python worker.
+    let empty: [f32; 0] = [];
+    let have = buffer.0.len() >= NN_ACT_LEN;
+    let features: &[f32] = if have { &buffer.0[0..NN_FEATURES] } else { &empty[..] };
+    let pi0: &[f32] = if have { &buffer.0[NN_FEATURES..NN_FEATURES + NN_PI0] } else { &empty[..] };
+    let pi1: &[f32] = if have {
+        &buffer.0[NN_FEATURES + NN_PI0..NN_FEATURES + NN_PI0 + NN_PI1]
+    } else {
+        &empty[..]
+    };
+    let logits: &[f32] = if have { &buffer.0[NN_FEATURES + NN_PI0 + NN_PI1..NN_ACT_LEN] } else { &empty[..] };
+
+    // Softmax the logits for the action bars / readout.
+    let mut probs = [0.0f32; NN_LOGITS];
+    if have {
+        let m = logits.iter().cloned().fold(f32::MIN, f32::max);
+        let mut sum = 0.0;
+        for k in 0..NN_LOGITS {
+            probs[k] = (logits[k] - m).exp();
+            sum += probs[k];
+        }
+        for p in probs.iter_mut() {
+            *p /= sum;
+        }
+    }
+
+    let ma_entity = max_abs(entity);
+    let ma_grass = max_abs(grass);
+    let ma_scalars = max_abs(scalars);
+    let ma_features = max_abs(features);
+    let ma_pi0 = max_abs(pi0);
+    let ma_pi1 = max_abs(pi1);
+
+    for (cell, mut bg) in &mut cell_q {
+        let v = match cell.layer {
+            NnLayer::InputEntity => entity.get(cell.index).copied().unwrap_or(0.0) / ma_entity,
+            NnLayer::InputGrass => grass.get(cell.index).copied().unwrap_or(0.0) / ma_grass,
+            NnLayer::Scalars => scalars.get(cell.index).copied().unwrap_or(0.0) / ma_scalars,
+            NnLayer::Features => features.get(cell.index).copied().unwrap_or(0.0) / ma_features,
+            NnLayer::Pi0 => pi0.get(cell.index).copied().unwrap_or(0.0) / ma_pi0,
+            NnLayer::Pi1 => pi1.get(cell.index).copied().unwrap_or(0.0) / ma_pi1,
+            // Action cells show softmax probability (already 0..1).
+            NnLayer::Action => probs.get(cell.index).copied().unwrap_or(0.0),
+        };
+        *bg = BackgroundColor(activation_color(v));
+    }
+
+    let names = ["Straight", "Right", "Left"];
+    let text = if have {
+        let mut argmax = 0;
+        for k in 1..NN_LOGITS {
+            if probs[k] > probs[argmax] {
+                argmax = k;
+            }
+        }
+        format!("Snake {}: {} ({:.0}%)", sel, names[argmax], probs[argmax] * 100.0)
+    } else {
+        format!("Snake {}: waiting for inference...", sel)
+    };
+    for mut t in &mut action_text_q {
+        t.0 = text.clone();
     }
 }
