@@ -1,16 +1,25 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use pyo3::prelude::*;
-use animals_engine::{GameState, RelativeAction, HUNGER_LIMIT, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
+use std::collections::HashSet;
 
-/// Distance from `pos` to the nearest alive prey, or `None` if none are alive.
-fn min_dist_to_prey(state: &GameState, pos: (f32, f32)) -> Option<f32> {
+use pyo3::prelude::*;
+use animals_engine::{
+    GameState, RelativeAction, HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE,
+};
+
+/// Distance from `pos` to the nearest alive prey **within `SMELL_RANGE`
+/// torus-wrapped Manhattan cells**, or `None` if nothing is in smell range.
+fn min_dist_to_smelled_prey(state: &GameState, pos: (f32, f32)) -> Option<f32> {
+    let from = (pos.0.round() as i32, pos.1.round() as i32);
     let mut min_d = f32::MAX;
     for p in &state.preys {
         if !p.is_dead {
-            let dx = pos.0 - p.pos.0.round();
-            let dy = pos.1 - p.pos.1.round();
-            let d = (dx * dx + dy * dy).sqrt();
+            let to = (p.pos.0.round() as i32, p.pos.1.round() as i32);
+            let (dx, dy) = state.torus_delta(from, to);
+            if dx.abs() + dy.abs() > SMELL_RANGE {
+                continue;
+            }
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
             if d < min_d {
                 min_d = d;
             }
@@ -43,6 +52,9 @@ pub struct Simulation {
     num_snakes: usize,
     num_preys: usize,
     num_amphibias: usize,
+    /// Per-snake set of visited 4x4-coarse grid cells, used to reward
+    /// exploration when no prey is smelled. Reset on death and on eating.
+    visited: Vec<HashSet<(i32, i32)>>,
 }
 
 #[pymethods]
@@ -54,11 +66,13 @@ impl Simulation {
             num_snakes,
             num_preys,
             num_amphibias,
+            visited: vec![HashSet::new(); num_snakes],
         }
     }
 
     fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
         self.game_state = GameState::new(100, 100, self.num_snakes, self.num_preys, self.num_amphibias);
+        self.visited = vec![HashSet::new(); self.num_snakes];
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
             obs.push(self.game_state.get_relative_observation(i).to_vec());
@@ -127,7 +141,7 @@ impl Simulation {
             .game_state
             .snakes
             .iter()
-            .map(|s| min_dist_to_prey(&self.game_state, s.head_pos))
+            .map(|s| min_dist_to_smelled_prey(&self.game_state, s.head_pos))
             .collect();
         // Each prey's distance to the nearest snake head, indexed as
         // [preys..., amphibias...] to match the engine's `preys` vector.
@@ -150,8 +164,9 @@ impl Simulation {
         for i in 0..self.num_snakes {
             let snake = &self.game_state.snakes[i];
             let done = snake.is_dead;
+            let ate = !done && snake.score != prev_scores[i];
 
-            let reward = if snake.is_dead {
+            let reward = if done {
                 if snake.death_by_hunger { -5.0 } else { -3.0 }
             } else {
                 let mut r = 0.0;
@@ -159,18 +174,34 @@ impl Simulation {
                 // same-tick kill-and-eat is fully credited.
                 r += 50.0 * (snake.kills - prev_kills[i]) as f32;
                 r += 30.0 * (snake.score - prev_scores[i]) as f32;
-                if snake.score == prev_scores[i] {
+                if !ate {
                     // Only shape toward prey on ticks where we didn't eat — an
                     // eat resets which prey is nearest, making the delta noise.
-                    if let (Some(prev), Some(cur)) =
-                        (prev_snake_dists[i], min_dist_to_prey(&self.game_state, snake.head_pos))
-                    {
+                    let cur_smell = min_dist_to_smelled_prey(&self.game_state, snake.head_pos);
+                    if let (Some(prev), Some(cur)) = (prev_snake_dists[i], cur_smell) {
                         r += (prev - cur).clamp(-2.0, 2.0) * 0.15;
                     }
                     r += -0.01 * (snake.steps_since_last_eat as f32 / (HUNGER_LIMIT as f32 / 4.0));
+
+                    // Exploration bonus: only when nothing is smelled (smell ->
+                    // pursue via shaping above, no smell -> explore), reward
+                    // entering a not-yet-visited coarse (4x4) grid cell.
+                    if cur_smell.is_none() {
+                        let head = snake.body[0];
+                        let coarse = (head.0 / 4, head.1 / 4);
+                        if self.visited[i].insert(coarse) {
+                            r += 0.05;
+                        }
+                    }
                 }
                 r
             };
+
+            // A snake's visited set only reflects "since last meal, this life" —
+            // clear it on death (respawns elsewhere) and on eating (fresh hunt).
+            if done || ate {
+                self.visited[i].clear();
+            }
 
             rewards.push(reward);
             dones.push(done);

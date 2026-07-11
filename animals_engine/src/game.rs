@@ -4,7 +4,7 @@ use crate::map::{Map, Terrain};
 use crate::snake::SnakeState;
 use crate::species::Species;
 use crate::direction::Direction;
-use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
+use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE};
 
 #[derive(Clone, Debug)]
 pub struct PreyState {
@@ -52,7 +52,7 @@ impl GameState {
             state.snakes[i] = SnakeState::new(pos, direction);
         }
         for i in 0..total_preys {
-aa            state.spawn_prey(i);
+            state.spawn_prey(i);
         }
         state.update_targets();
         state
@@ -380,29 +380,55 @@ aa            state.spawn_prey(i);
         }
     }
 
+    /// Torus-wrapped `(dx, dy)` from grid cell `from` to grid cell `to`, each
+    /// component in `(-dim/2, dim/2]` — the shortest path across the wraparound
+    /// map edge.
+    pub fn torus_delta(&self, from: (i32, i32), to: (i32, i32)) -> (i32, i32) {
+        let mut dx = to.0 - from.0;
+        let mut dy = to.1 - from.1;
+        if dx > self.grid_width / 2 { dx -= self.grid_width; }
+        else if dx < -self.grid_width / 2 { dx += self.grid_width; }
+        if dy > self.grid_height / 2 { dy -= self.grid_height; }
+        else if dy < -self.grid_height / 2 { dy += self.grid_height; }
+        (dx, dy)
+    }
+
+    fn torus_manhattan(&self, a: (i32, i32), b: (i32, i32)) -> i32 {
+        let (dx, dy) = self.torus_delta(a, b);
+        dx.abs() + dy.abs()
+    }
+
+    /// Refreshes each alive snake's `tracked_target`: a snake only smells prey
+    /// within `SMELL_RANGE` torus-wrapped Manhattan cells of its head, so a
+    /// target is dropped the tick it (or its prey) leaves that range, and a
+    /// new one is acquired only from prey currently within range.
     pub fn update_targets(&mut self) {
         for s in 0..self.snakes.len() {
             if self.snakes[s].is_dead { continue; }
-            let head = self.snakes[s].head_pos;
+            let head = self.snakes[s].body[0];
             let mut target_idx = self.snakes[s].tracked_target;
             if let Some(idx) = target_idx {
-                if self.preys.get(idx).map_or(true, |p| p.is_dead) {
-                    target_idx = None;
-                }
+                let drop = match self.preys.get(idx) {
+                    None => true,
+                    Some(p) => {
+                        if p.is_dead {
+                            true
+                        } else {
+                            let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
+                            self.torus_manhattan(head, p_grid) > SMELL_RANGE
+                        }
+                    }
+                };
+                if drop { target_idx = None; }
             }
             if target_idx.is_none() {
                 let mut closest_dist = f32::MAX;
                 for (i, p) in self.preys.iter().enumerate() {
                     if !p.is_dead {
-                        let mut dx = p.pos.0 - head.0;
-                        let mut dy = p.pos.1 - head.1;
-                        
-                        if dx > self.grid_width as f32 / 2.0 { dx -= self.grid_width as f32; }
-                        else if dx < -(self.grid_width as f32) / 2.0 { dx += self.grid_width as f32; }
-                        if dy > self.grid_height as f32 / 2.0 { dy -= self.grid_height as f32; }
-                        else if dy < -(self.grid_height as f32) / 2.0 { dy += self.grid_height as f32; }
-                        
-                        let d = (dx * dx + dy * dy).sqrt();
+                        let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
+                        if self.torus_manhattan(head, p_grid) > SMELL_RANGE { continue; }
+                        let (dx, dy) = self.torus_delta(head, p_grid);
+                        let d = ((dx * dx + dy * dy) as f32).sqrt();
                         if d < closest_dist {
                             closest_dist = d;
                             target_idx = Some(i);
@@ -421,10 +447,12 @@ aa            state.spawn_prey(i);
     ///   (including a dead snake's frozen corpse — still a solid obstacle in
     ///   `step()`'s collision check) `-0.5`; else passable terrain
     ///   `Species::Snake.speed_on(terrain) * 0.5`.
-    /// - `[64]`/`[65]` — unit direction to the nearest alive prey (forward /
-    ///   right components), zero when no prey exists.
-    /// - `[66]` — distance to that prey normalized by the larger grid
-    ///   dimension (`1.0` when no prey exists).
+    /// - `[64]`/`[65]` — unit direction to the nearest prey the snake can
+    ///   smell (forward / right components), zero when nothing is smelled.
+    ///   A snake only smells prey within `SMELL_RANGE` torus-wrapped
+    ///   Manhattan cells of its head (see `update_targets`).
+    /// - `[66]` — distance to that prey normalized by `SMELL_RANGE` (`1.0`
+    ///   when nothing is smelled).
     /// - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT`.
     /// - `[68]` — own length / 100, capped at 1.
     pub fn get_relative_observation(&self, snake_index: usize) -> [f32; SNAKE_OBS_SIZE] {
@@ -498,24 +526,16 @@ aa            state.spawn_prey(i);
         if let Some(idx) = snake.tracked_target {
             let p = &self.preys[idx];
             let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
-            let mut dx = p_grid.0 - head.0;
-            let mut dy = p_grid.1 - head.1;
-            
-            if dx > self.grid_width / 2 { dx -= self.grid_width; }
-            else if dx < -self.grid_width / 2 { dx += self.grid_width; }
-            if dy > self.grid_height / 2 { dy -= self.grid_height; }
-            else if dy < -self.grid_height / 2 { dy += self.grid_height; }
-            
+            let (dx, dy) = self.torus_delta(head, p_grid);
             let d = ((dx * dx + dy * dy) as f32).sqrt();
             closest = Some((dx, dy, d));
         }
 
-        let max_dim = self.grid_width.max(self.grid_height) as f32;
         if let Some((dx, dy, dist)) = closest {
             let d = dist.max(1e-6);
             obs[64] = (dx * vec_straight.0 + dy * vec_straight.1) as f32 / d;
             obs[65] = (dx * vec_right.0 + dy * vec_right.1) as f32 / d;
-            obs[66] = (dist / max_dim).min(1.0);
+            obs[66] = (dist / SMELL_RANGE as f32).min(1.0);
         } else {
             obs[66] = 1.0;
         }
@@ -634,5 +654,74 @@ mod tests {
         // (5,5) is 3 cells straight ahead of (5,8) facing Down -> f=3, r=0 -> idx (3+3)*8+(0+3)=51
         let idx = ((3 + 3) * 8 + (0 + 3)) as usize;
         assert_eq!(obs[idx], -0.5, "dead snake's body cell must read as an obstacle, not open terrain");
+    }
+
+    #[test]
+    fn prey_beyond_smell_range_is_not_sensed() {
+        let mut state = GameState::new(100, 100, 1, 1, 0);
+        state.snakes[0].body = vec![(50, 50)];
+        state.snakes[0].head_pos = (50.0, 50.0);
+        state.snakes[0].direction = Direction::Up;
+        state.snakes[0].tracked_target = None;
+        state.preys[0].pos = (50.0, 85.0); // Manhattan distance 35 > SMELL_RANGE (30)
+        state.preys[0].is_dead = false;
+
+        state.update_targets();
+        assert_eq!(state.snakes[0].tracked_target, None, "prey beyond SMELL_RANGE must not be acquired");
+
+        let obs = state.get_relative_observation(0);
+        assert_eq!(obs[64], 0.0);
+        assert_eq!(obs[65], 0.0);
+        assert_eq!(obs[66], 1.0);
+    }
+
+    #[test]
+    fn prey_within_smell_range_sets_direction() {
+        let mut state = GameState::new(100, 100, 1, 1, 0);
+        state.snakes[0].body = vec![(50, 50)];
+        state.snakes[0].head_pos = (50.0, 50.0);
+        state.snakes[0].direction = Direction::Up;
+        state.snakes[0].tracked_target = None;
+        state.preys[0].pos = (50.0, 60.0); // 10 cells straight ahead, within SMELL_RANGE
+        state.preys[0].is_dead = false;
+
+        state.update_targets();
+        assert_eq!(state.snakes[0].tracked_target, Some(0));
+
+        let obs = state.get_relative_observation(0);
+        assert!((obs[64] - 1.0).abs() < 1e-5, "forward component should be ~1.0, got {}", obs[64]);
+        assert!(obs[65].abs() < 1e-5, "right component should be ~0.0, got {}", obs[65]);
+        assert!((obs[66] - 10.0 / 30.0).abs() < 1e-5, "distance should be 10/SMELL_RANGE, got {}", obs[66]);
+    }
+
+    #[test]
+    fn target_dropped_when_prey_leaves_smell_range() {
+        let mut state = GameState::new(100, 100, 1, 1, 0);
+        state.snakes[0].body = vec![(50, 50)];
+        state.snakes[0].head_pos = (50.0, 50.0);
+        state.snakes[0].direction = Direction::Up;
+        state.snakes[0].tracked_target = None;
+        state.preys[0].pos = (50.0, 60.0);
+        state.preys[0].is_dead = false;
+        state.update_targets();
+        assert_eq!(state.snakes[0].tracked_target, Some(0));
+
+        state.preys[0].pos = (50.0, 81.0); // Manhattan distance 31 > SMELL_RANGE
+        state.update_targets();
+        assert_eq!(state.snakes[0].tracked_target, None, "target must be dropped once out of smell range");
+    }
+
+    #[test]
+    fn smell_wraps_around_torus_edge() {
+        let mut state = GameState::new(100, 100, 1, 1, 0);
+        state.snakes[0].body = vec![(1, 50)];
+        state.snakes[0].head_pos = (1.0, 50.0);
+        state.snakes[0].direction = Direction::Up;
+        state.snakes[0].tracked_target = None;
+        state.preys[0].pos = (98.0, 50.0); // raw Manhattan 97, torus-wrapped 3
+        state.preys[0].is_dead = false;
+
+        state.update_targets();
+        assert_eq!(state.snakes[0].tracked_target, Some(0), "prey must be sensed across the torus wrap");
     }
 }

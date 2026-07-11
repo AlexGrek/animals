@@ -11,8 +11,8 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
   - **-0.8**: Enemy snake head (the part that kills on collision or head-to-head)
   - **-0.5**: Enemy snake body
   - otherwise **`Species::Snake.speed_on(terrain) * 0.5`** (passable terrain, weighted by how fast a snake moves there)
-- `[64]`/`[65]` — **unit** direction to the nearest alive prey (forward/right components in the snake's frame); zero if no prey exists. A unit vector keeps the heading signal equally strong at any range, unlike the old `dx / max_dim` encoding which shrank to ~0.01 for a prey a few cells away.
-- `[66]` — distance to that prey, normalized by the larger grid dimension (`1.0` if no prey exists).
+- `[64]`/`[65]` — **unit** direction to the nearest prey the snake can *smell* (forward/right components in the snake's frame); zero if nothing is smelled. A snake only smells prey within `SMELL_RANGE = 30` torus-wrapped Manhattan cells of its head (`GameState::update_targets`) — it has no knowledge of prey farther away, however close it may appear on an absolute map view. A unit vector keeps the heading signal equally strong at any range within that radius, unlike the old `dx / max_dim` encoding which shrank to ~0.01 for a prey a few cells away.
+- `[66]` — distance to that prey, normalized by `SMELL_RANGE` (`1.0` if nothing is smelled).
 - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT` (see below).
 - `[68]` — own length `/ 100`, capped at 1.
 
@@ -25,7 +25,7 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
 - `[64]`/`[65]` — unit direction (east/north) to the nearest **alive** snake head; zero if no snake is alive.
 - `[66]` — distance to that head, normalized by the larger grid dimension (`1.0` if no snake is alive).
 
-This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8 cell radius) is often too small to see an oncoming snake in time — snakes already got an equivalent global signal toward prey, so without it the matchup was asymmetric in the predator's favor.
+This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8 cell radius) is often too small to see an oncoming snake in time. Note this is asymmetric with the snake's sense of prey: prey always see the globally nearest snake head, while a snake only *smells* prey within `SMELL_RANGE` (see above) — deliberate, so a snake must explore to find prey rather than beelining toward one anywhere on the map.
 
 ## Reward Functions (`animals_simulation/src/lib.rs::step`)
 
@@ -33,7 +33,10 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 - **Death**: `-5.0` if by hunger, else `-3.0` (wall, self, opponent, or head-to-head collision).
 - **Kill** (opponent collides into you): `+50.0 * Δkills` — additive with eating, not `else if`, so a same-tick kill-and-eat is fully credited.
 - **Eat** (prey within a 3×3 radius of the head): `+30.0 * Δscore`.
-- Otherwise (no kill/eat this tick): `0.15 * clamp(prev_dist_to_nearest_prey - curr_dist, -2.0, 2.0)` distance shaping, plus a hunger penalty `-0.01 * steps_since_last_eat / (HUNGER_LIMIT / 4)`. The shaping delta is clamped because when *another* snake eats the previously-nearest prey, that prey respawns elsewhere on the map and the raw distance can jump by ~100 cells — an unclamped delta injected a reward spike of pure noise into that tick.
+- Otherwise (no kill/eat this tick):
+  - **Smell shaping**: `0.15 * clamp(prev_dist_to_smelled_prey - curr_dist, -2.0, 2.0)`, gated to prey within `SMELL_RANGE` torus-wrapped Manhattan cells (`min_dist_to_smelled_prey` in `animals_simulation/src/lib.rs`). If either side of the delta has nothing in smell range (prey just entered/left range, or none exists), no shaping is applied that tick — the reward never leaks information the policy can't observe. The distance itself is torus-wrapped, unlike the pre-existing (buggy) unwrapped version.
+  - **Hunger penalty**: `-0.01 * steps_since_last_eat / (HUNGER_LIMIT / 4)`.
+  - **Exploration bonus**: `+0.05` for entering a not-yet-visited 4×4-coarse grid cell, applied **only when nothing is currently smelled** (smell → pursue via shaping; no smell → explore). Visited-cell state is per-snake, held in the PyO3 `Simulation` struct (not the engine), and is cleared whenever the snake dies or eats — it only tracks "new ground since the last meal, this life."
 
 ### Prey / Amphibia
 - **Death** (eaten this tick): `-10.0`.
@@ -42,7 +45,7 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 
 ## Hunger and Eating
 
-- `HUNGER_LIMIT = 600` steps without eating kills a snake (`animals_engine/src/lib.rs`).
+- `HUNGER_LIMIT = 1200` steps without eating kills a snake (`animals_engine/src/lib.rs`).
 - Snakes eat any prey within a 3×3 radius of their head (Chebyshev distance ≤ 1), not just an exact cell match — this makes eating slightly forgiving of the 1-cell-per-tick grid movement.
 
 ## Episode Termination: Per-Snake and Per-Prey Respawn

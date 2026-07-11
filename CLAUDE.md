@@ -49,9 +49,9 @@ Three Rust crates (cargo workspace) + one Python package. Three actor types: **S
 
 ### Cross-language invariants
 
-The **snake observation size** (`SNAKE_OBS_SIZE = 69`: 8×8 relative grid + prey unit-direction (2) + normalized distance (1) + hunger (1) + own length (1)), the **prey/amphibia observation size** (`PREY_OBS_SIZE = 67`: 8×8 absolute grid + nearest-snake-head unit-direction (2) + normalized distance (1)), the **snake action space** (3: straight/right/left), and the **prey/amphibia action space** (5: stand/up/right/down/left) are hardcoded in these places that must stay in sync:
+The **snake observation size** (`SNAKE_OBS_SIZE = 69`: 8×8 relative grid + smelled-prey unit-direction (2) + distance/SMELL_RANGE (1) + hunger (1) + own length (1)), the **prey/amphibia observation size** (`PREY_OBS_SIZE = 67`: 8×8 absolute grid + nearest-snake-head unit-direction (2) + normalized distance (1)), the **snake action space** (3: straight/right/left), and the **prey/amphibia action space** (5: stand/up/right/down/left) are hardcoded in these places that must stay in sync:
 
-1. `animals_engine/src/lib.rs` — `SNAKE_OBS_SIZE`, `PREY_OBS_SIZE`, `HUNGER_LIMIT` constants (used by `game.rs`'s two observation functions)
+1. `animals_engine/src/lib.rs` — `SNAKE_OBS_SIZE`, `PREY_OBS_SIZE`, `HUNGER_LIMIT`, `SMELL_RANGE` constants (used by `game.rs`'s two observation functions and `update_targets`)
 2. `learner/src/learner/constants.py` — Python mirror of the same constants, imported by every env/script below
 3. `learner/src/learner/environment.py` — `spaces.Box(shape=(SNAKE_OBS_SIZE,))` (both VecEnv classes)
 4. `learner/src/learner/prey_environment.py` / `amphibia_environment.py` — `spaces.Box(shape=(PREY_OBS_SIZE,))`
