@@ -21,7 +21,7 @@ pub const PREY_OBS_SIZE: usize = 131;
 pub const HUNGER_LIMIT: u32 = 1200;
 /// Smell radius: a snake only senses prey within this torus-wrapped
 /// Manhattan distance. Mirrored in `learner/src/learner/constants.py`.
-pub const SMELL_RANGE: i32 = 30;
+pub const SMELL_RANGE: i32 = 60;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

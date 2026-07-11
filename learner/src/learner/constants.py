@@ -17,7 +17,7 @@ PREY_OBS_SIZE = 131
 HUNGER_LIMIT = 1200
 
 # A snake only smells prey within this torus-wrapped Manhattan distance.
-SMELL_RANGE = 30
+SMELL_RANGE = 60
 
 # Prey / amphibia discrete action space: 0 Stand, 1 Up, 2 Right, 3 Down, 4 Left.
 PREY_NUM_ACTIONS = 5
