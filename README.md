@@ -59,6 +59,12 @@ task play-ai -- --snakes 4 --model snake_model --model v1
 ```
 *(If you supply M models and N snakes, models map 1:1. If you supply 1 model, it is duplicated for all N snakes).*
 
+**Watch All Species with AI Models**
+Run the Bevy game with custom counts of snakes, preys, and amphibias, providing a model for each species:
+```bash
+task play-ai -- --snakes 8 --preys 20 --amphibias 20 --model snake_model --prey-model prey_model --amphibia-model amphibia_model
+```
+
 **Headless Fast-Forward Test**
 Run a full-speed simulation without rendering and dump the final game statistics (score, length, kills, causes of death) to a JSON file.
 ```bash

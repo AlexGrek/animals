@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--amphibias-per-game", type=int, default=1, help="Number of amphibia per game instance.")
     parser.add_argument("--prey-model", type=str, default="models/prey_model.zip", help="Path to the frozen prey model (falls back to static prey if missing).")
     parser.add_argument("--amphibia-model", type=str, default="models/amphibia_model.zip", help="Path to the frozen amphibia model (falls back to static amphibia if missing).")
+    parser.add_argument("--resume", action="store_true", help="Resume training from model-path if it exists.")
 
     args = parser.parse_args()
 
@@ -103,24 +104,28 @@ def main():
             env_fns = [make_env_fn(i) for i in range(args.num_procs)]
             env = MultiProcRustVecEnv(env_fns)
 
-        logger.info("Initializing PPO agent with device='cpu'...")
-        # The policy is a tiny MLP; GPU host<->device transfer/launch overhead
-        # exceeds the compute it would save, so CPU is faster here.
-        # batch_size/n_steps tuned for CPU throughput: SB3 defaults (batch_size=64,
-        # n_steps=2048) create 512 minibatches * 10 epochs = 5120 tiny optimizer
-        # steps per update, which dominates wall-clock on CPU. Larger batches cut
-        # that overhead drastically (measured ~4.5x speedup); smaller n_steps gives
-        # more frequent policy updates for the same total sample count.
-        model = PPO(
-            "MlpPolicy",
-            env,
-            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
-            verbose=1,
-            device="cpu",
-            batch_size=4096,
-            n_steps=512,
-            ent_coef=0.01,
-        )
+        if args.resume and os.path.exists(args.model_path):
+            logger.info(f"Resuming training from {args.model_path}...")
+            model = PPO.load(args.model_path, env=env)
+        else:
+            logger.info("Initializing PPO agent with device='cpu'...")
+            # The policy is a tiny MLP; GPU host<->device transfer/launch overhead
+            # exceeds the compute it would save, so CPU is faster here.
+            # batch_size/n_steps tuned for CPU throughput: SB3 defaults (batch_size=64,
+            # n_steps=2048) create 512 minibatches * 10 epochs = 5120 tiny optimizer
+            # steps per update, which dominates wall-clock on CPU. Larger batches cut
+            # that overhead drastically (measured ~4.5x speedup); smaller n_steps gives
+            # more frequent policy updates for the same total sample count.
+            model = PPO(
+                "MlpPolicy",
+                env,
+                policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+                verbose=1,
+                device="cpu",
+                batch_size=4096,
+                n_steps=512,
+                ent_coef=0.01,
+            )
         
         logger.info(f"Starting training for {args.steps} steps...")
         model.learn(total_timesteps=args.steps, progress_bar=True)

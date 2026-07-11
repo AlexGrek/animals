@@ -152,25 +152,21 @@ struct MapTile;
 
 fn spawn_map(commands: &mut Commands, state: &GameState, images: &mut Assets<Image>) {
 
-    let width = GRID_WIDTH as u32 + 2;
-    let height = GRID_HEIGHT as u32 + 2;
+    let width = GRID_WIDTH as u32;
+    let height = GRID_HEIGHT as u32;
     let mut data = vec![0; (width * height * 4) as usize];
 
     for y in 0..height {
         for x in 0..width {
-            let grid_x = x as i32 - 1;
-            let grid_y = y as i32 - 1;
+            let grid_x = x as i32;
+            let grid_y = y as i32;
             
-            let color = if grid_x < 0 || grid_x >= GRID_WIDTH || grid_y < 0 || grid_y >= GRID_HEIGHT {
-                [76, 76, 89, 255] // srgb(0.3, 0.3, 0.35) mapped to u8
-            } else {
-                let terrain = state.map.get_terrain(grid_x, grid_y);
-                match terrain {
-                    Terrain::Grass => [35, 81, 40, 255], // srgb(0.14, 0.32, 0.16)
-                    Terrain::Road => [127, 102, 76, 255], // srgb(0.5, 0.4, 0.3)
-                    Terrain::Water => [51, 127, 229, 255], // srgb(0.2, 0.5, 0.9)
-                    Terrain::Rock => [102, 102, 102, 255], // srgb(0.4, 0.4, 0.4)
-                }
+            let terrain = state.map.get_terrain(grid_x, grid_y);
+            let color = match terrain {
+                Terrain::Grass => [35, 81, 40, 255], // srgb(0.14, 0.32, 0.16)
+                Terrain::Road => [127, 102, 76, 255], // srgb(0.5, 0.4, 0.3)
+                Terrain::Water => [51, 127, 229, 255], // srgb(0.2, 0.5, 0.9)
+                Terrain::Rock => [102, 102, 102, 255], // srgb(0.4, 0.4, 0.4)
             };
             
             let idx = ((height - 1 - y) * width + x) as usize * 4;
@@ -941,6 +937,7 @@ fn render_sync(
                 .get(s_idx)
                 .and_then(|body| body.get(i))
                 .map(|p| Vec3::new(p.0 as f32 * TILE_SIZE - offset_x, p.1 as f32 * TILE_SIZE - offset_y, 0.0))
+                .filter(|from| from.distance(to) <= 2.0 * TILE_SIZE)
                 .unwrap_or(to);
 
             commands.spawn((

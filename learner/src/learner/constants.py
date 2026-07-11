@@ -14,7 +14,7 @@ SNAKE_OBS_SIZE = 69
 PREY_OBS_SIZE = 67
 
 # Steps without eating before a snake dies of hunger.
-HUNGER_LIMIT = 600
+HUNGER_LIMIT = 1200
 
 # Prey / amphibia discrete action space: 0 Stand, 1 Up, 2 Right, 3 Down, 4 Left.
 PREY_NUM_ACTIONS = 5

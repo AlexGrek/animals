@@ -13,6 +13,7 @@ pub struct SnakeState {
     pub death_by_opponent: bool,
     pub death_by_hunger: bool,
     pub steps_since_last_eat: u32,
+    pub tracked_target: Option<usize>,
 }
 
 impl SnakeState {
@@ -36,6 +37,7 @@ impl SnakeState {
             death_by_opponent: false,
             death_by_hunger: false,
             steps_since_last_eat: 0,
+            tracked_target: None,
         }
     }
 }

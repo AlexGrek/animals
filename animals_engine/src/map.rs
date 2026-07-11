@@ -29,17 +29,15 @@ impl Map {
     }
 
     pub fn get_terrain(&self, x: i32, y: i32) -> Terrain {
-        if x < 0 || x >= self.width || y < 0 || y >= self.height {
-            Terrain::Rock // Treat out of bounds as rock
-        } else {
-            self.tiles[(y * self.width + x) as usize]
-        }
+        let x = x.rem_euclid(self.width);
+        let y = y.rem_euclid(self.height);
+        self.tiles[(y * self.width + x) as usize]
     }
 
     pub fn set_terrain(&mut self, x: i32, y: i32, terrain: Terrain) {
-        if x >= 0 && x < self.width && y >= 0 && y < self.height {
-            self.tiles[(y * self.width + x) as usize] = terrain;
-        }
+        let x = x.rem_euclid(self.width);
+        let y = y.rem_euclid(self.height);
+        self.tiles[(y * self.width + x) as usize] = terrain;
     }
 
     fn generate(&mut self) {

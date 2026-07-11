@@ -52,8 +52,9 @@ impl GameState {
             state.snakes[i] = SnakeState::new(pos, direction);
         }
         for i in 0..total_preys {
-            state.spawn_prey(i);
+aa            state.spawn_prey(i);
         }
+        state.update_targets();
         state
     }
 
@@ -152,6 +153,7 @@ impl GameState {
             let (pos, direction) = self.spawn_position(i);
             self.snakes[i] = SnakeState::new(pos, direction);
         }
+        self.update_targets();
     }
 
     pub fn set_direction(&mut self, snake_index: usize, new_dir: Direction) {
@@ -166,6 +168,8 @@ impl GameState {
         if self.game_over {
             return;
         }
+
+        self.update_targets();
 
         for p in &mut self.prey_died_this_tick {
             *p = false;
@@ -205,11 +209,8 @@ impl GameState {
                 self.preys[i].pos.0 += dir_vec.0 as f32 * speed * dt;
                 self.preys[i].pos.1 += dir_vec.1 as f32 * speed * dt;
 
-                // Clamp to grid boundaries
-                if self.preys[i].pos.0 < 0.0 { self.preys[i].pos.0 = 0.0; }
-                if self.preys[i].pos.0 >= self.grid_width as f32 { self.preys[i].pos.0 = self.grid_width as f32 - 1.0; }
-                if self.preys[i].pos.1 < 0.0 { self.preys[i].pos.1 = 0.0; }
-                if self.preys[i].pos.1 >= self.grid_height as f32 { self.preys[i].pos.1 = self.grid_height as f32 - 1.0; }
+                self.preys[i].pos.0 = self.preys[i].pos.0.rem_euclid(self.grid_width as f32);
+                self.preys[i].pos.1 = self.preys[i].pos.1.rem_euclid(self.grid_height as f32);
 
                 // Collide with rocks and water — restore to pre-move position
                 let px_after = self.preys[i].pos.0.round() as i32;
@@ -239,6 +240,9 @@ impl GameState {
             
             snake.head_pos.0 += dir_vec.0 as f32 * speed * dt;
             snake.head_pos.1 += dir_vec.1 as f32 * speed * dt;
+            
+            snake.head_pos.0 = snake.head_pos.0.rem_euclid(self.grid_width as f32);
+            snake.head_pos.1 = snake.head_pos.1.rem_euclid(self.grid_height as f32);
             
             let q_head_after = (snake.head_pos.0.round() as i32, snake.head_pos.1.round() as i32);
             new_heads[i] = q_head_after;
@@ -273,12 +277,7 @@ impl GameState {
 
             if !cell_changed[i] { continue; }
 
-            // Wall collision
-            if head.0 < 0 || head.0 >= self.grid_width || head.1 < 0 || head.1 >= self.grid_height {
-                self.snakes[i].is_dead = true;
-                self.snakes[i].death_by_wall = true;
-                continue;
-            }
+            // Wall collision (removed due to toroidal map)
 
             // Rock collision
             if self.map.get_terrain(head.0, head.1) == Terrain::Rock {
@@ -342,6 +341,7 @@ impl GameState {
                 self.spawn_prey(p_idx);
             }
         }
+        self.update_targets();
     }
 
     pub fn spawn_prey(&mut self, index: usize) {
@@ -376,6 +376,40 @@ impl GameState {
                 self.preys[index].pos = (x as f32, y as f32);
                 self.preys[index].is_dead = false;
                 break;
+            }
+        }
+    }
+
+    pub fn update_targets(&mut self) {
+        for s in 0..self.snakes.len() {
+            if self.snakes[s].is_dead { continue; }
+            let head = self.snakes[s].head_pos;
+            let mut target_idx = self.snakes[s].tracked_target;
+            if let Some(idx) = target_idx {
+                if self.preys.get(idx).map_or(true, |p| p.is_dead) {
+                    target_idx = None;
+                }
+            }
+            if target_idx.is_none() {
+                let mut closest_dist = f32::MAX;
+                for (i, p) in self.preys.iter().enumerate() {
+                    if !p.is_dead {
+                        let mut dx = p.pos.0 - head.0;
+                        let mut dy = p.pos.1 - head.1;
+                        
+                        if dx > self.grid_width as f32 / 2.0 { dx -= self.grid_width as f32; }
+                        else if dx < -(self.grid_width as f32) / 2.0 { dx += self.grid_width as f32; }
+                        if dy > self.grid_height as f32 / 2.0 { dy -= self.grid_height as f32; }
+                        else if dy < -(self.grid_height as f32) / 2.0 { dy += self.grid_height as f32; }
+                        
+                        let d = (dx * dx + dy * dy).sqrt();
+                        if d < closest_dist {
+                            closest_dist = d;
+                            target_idx = Some(i);
+                        }
+                    }
+                }
+                self.snakes[s].tracked_target = target_idx;
             }
         }
     }
@@ -437,14 +471,14 @@ impl GameState {
             for r in -3..=4 {
                 let cx = head.0 + f * vec_straight.0 + r * vec_right.0;
                 let cy = head.1 + f * vec_straight.1 + r * vec_right.1;
-                let cell = (cx, cy);
-
-                let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
-                let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
+                let cx_wrapped = cx.rem_euclid(self.grid_width);
+                let cy_wrapped = cy.rem_euclid(self.grid_height);
+                let cell = (cx_wrapped, cy_wrapped);
+                let terrain = self.map.get_terrain(cx_wrapped, cy_wrapped);
 
                 obs[idx] = if prey_cells.contains(&cell) {
                     1.0
-                } else if out_of_bounds || terrain == Terrain::Rock || own_body.contains(&cell) {
+                } else if terrain == Terrain::Rock || own_body.contains(&cell) {
                     -1.0
                 } else if enemy_heads.contains(&cell) {
                     -0.8
@@ -461,16 +495,19 @@ impl GameState {
         // vector keeps the heading signal strong at any range (the old
         // `dx / max_dim` encoding shrank to ~0.01 for nearby prey).
         let mut closest: Option<(i32, i32, f32)> = None;
-        for p in &self.preys {
-            if !p.is_dead {
-                let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
-                let dx = p_grid.0 - head.0;
-                let dy = p_grid.1 - head.1;
-                let d = ((dx * dx + dy * dy) as f32).sqrt();
-                if closest.map_or(true, |(_, _, cd)| d < cd) {
-                    closest = Some((dx, dy, d));
-                }
-            }
+        if let Some(idx) = snake.tracked_target {
+            let p = &self.preys[idx];
+            let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
+            let mut dx = p_grid.0 - head.0;
+            let mut dy = p_grid.1 - head.1;
+            
+            if dx > self.grid_width / 2 { dx -= self.grid_width; }
+            else if dx < -self.grid_width / 2 { dx += self.grid_width; }
+            if dy > self.grid_height / 2 { dy -= self.grid_height; }
+            else if dy < -self.grid_height / 2 { dy += self.grid_height; }
+            
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            closest = Some((dx, dy, d));
         }
 
         let max_dim = self.grid_width.max(self.grid_height) as f32;
@@ -520,12 +557,12 @@ impl GameState {
             for dx in -3..=4 { // East-West
                 let cx = prey_grid_pos.0 + dx;
                 let cy = prey_grid_pos.1 + dy;
-                let cell = (cx, cy);
+                let cx_wrapped = cx.rem_euclid(self.grid_width);
+                let cy_wrapped = cy.rem_euclid(self.grid_height);
+                let cell = (cx_wrapped, cy_wrapped);
+                let terrain = self.map.get_terrain(cx_wrapped, cy_wrapped);
 
-                let out_of_bounds = cx < 0 || cx >= self.grid_width || cy < 0 || cy >= self.grid_height;
-                let terrain = if out_of_bounds { Terrain::Rock } else { self.map.get_terrain(cx, cy) };
-
-                obs[idx] = if out_of_bounds || terrain == Terrain::Rock {
+                obs[idx] = if terrain == Terrain::Rock {
                     -1.0
                 } else if snake_heads.contains(&cell) {
                     -0.8
@@ -541,8 +578,14 @@ impl GameState {
         // Unit direction + normalized distance to the nearest alive snake head.
         let mut closest: Option<(i32, i32, f32)> = None;
         for h in &snake_heads {
-            let dx = h.0 - prey_grid_pos.0;
-            let dy = h.1 - prey_grid_pos.1;
+            let mut dx = h.0 - prey_grid_pos.0;
+            let mut dy = h.1 - prey_grid_pos.1;
+            
+            if dx > self.grid_width / 2 { dx -= self.grid_width; }
+            else if dx < -self.grid_width / 2 { dx += self.grid_width; }
+            if dy > self.grid_height / 2 { dy -= self.grid_height; }
+            else if dy < -self.grid_height / 2 { dy += self.grid_height; }
+            
             let d = ((dx * dx + dy * dy) as f32).sqrt();
             if closest.map_or(true, |(_, _, cd)| d < cd) {
                 closest = Some((dx, dy, d));
