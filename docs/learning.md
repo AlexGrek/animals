@@ -24,7 +24,7 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
   - **-0.5**: Snake body
   - otherwise **`prey.species.speed_on(terrain) * 0.5`** — this is species-relative, so the *same* map cell reads differently to the two species (water ≈ 0.1 to Prey, ≈ 0.5 to Amphibia; grass ≈ 0.4 to Prey, ≈ 0.3 to Amphibia)
 - `[64]`/`[65]` — unit direction (east/north) to the nearest **alive** snake head; zero if no snake is alive.
-- `[66]` — distance to that head, normalized by the larger grid dimension (`1.0` if no snake is alive).
+- `[66]` — distance to that head, normalized as `min(dist / 60, 1)` (full resolution over the 0-60 cell band where escape decisions actually happen) instead of dividing by the larger grid dimension, which made 10-30 cell threats nearly invisible at roughly 0.02-0.07 signal magnitude; still `1.0` if no snake is alive. This is a semantic change: older prey/amphibia checkpoints still shape-match (obs size unchanged) but will misread this scalar until retrained.
 - `[67..131)` — 8x8 grass-health grid over the *same* absolute cells as `[0..64)`: `grass_health` in `[0, 1]` per cell — where the food is, so prey can graze toward full grass (which also drives reproduction once `grass_eaten ≥ 8`).
 
 This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8 cell radius) is often too small to see an oncoming snake in time. Note this is asymmetric with the snake's sense of prey: prey always see the globally nearest snake head, while a snake only *smells* prey within `SMELL_RANGE` (see above) — deliberate, so a snake must explore to find prey rather than beelining toward one anywhere on the map.
@@ -43,8 +43,10 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 
 ### Prey / Amphibia
 - **Death** (eaten this tick): `-10.0`.
-- **Survive**: `0.1` base, plus threat shaping `0.1 * clamp(curr_dist_to_nearest_alive_snake_head - prev_dist, -2.0, 2.0)` — reward for increasing distance from the closest predator. For Amphibia this naturally rewards retreating into water, where snakes crawl at 0.2 speed but amphibia swim at 1.0.
-- When training with multiple prey/amphibia per game, a surviving individual also gets `+2.0` for each sibling eaten that tick (the predator is occupied elsewhere — a genuinely safer state), applied in the Python env (`prey_environment.py` / `amphibia_environment.py`), not the Rust reward.
+- **Reproduction** (`grass_eaten >= 8` with no snake within 8 cells; the parent slot "dies" and 3 children spawn): `+25.0` terminal reward — previously this was wrongly punished as a death (`-10`), which trained prey to avoid grazing enough to trigger it.
+- Long-dead pool slots (dead but not this tick, awaiting revival): reward exactly `0.0`, so they no longer pollute the PPO batch with fake `+0.1` survival signal.
+- Alive: base `0.1`; grazing `+0.5 * grass_eaten` delta this tick (~`+0.25`/tick on full grass; dense "seek fresh grass" signal that also drives exploration since grazed cells deplete); stand penalty `-0.2` only when standing AND not currently grazing (grass delta `<= 0`); threat shaping `0.1 * clamp(delta-distance to nearest snake head, ±2)` with the distance now **torus-wrapped** (previously unwrapped, which was wrong near map edges); new danger-zone penalty `-0.15` per tick while within 10 cells of a snake head; existing crowding penalty/shaping unchanged.
+- The per-sibling `+2.0` death bonus previously applied in the Python envs (`prey_environment.py` / `amphibia_environment.py`) has been removed (an uncontrollable event = pure variance, and it would have double-rewarded reproduction events).
 
 ## Hunger and Eating
 
@@ -103,6 +105,6 @@ Training runs on `device="cpu"` (the policy MLPs are small enough that GPU host�
 
 We instead use:
 - Snake: `batch_size=4096`, `n_steps=512`, `ent_coef=0.01` (measured ~14,000 steps/s, a ~4.5x wall-clock speedup over SB3 defaults).
-- Prey / Amphibia: `batch_size=2048`, `n_steps=512`, `ent_coef=0.02` — lower than the snake's exploration needs less encouragement now that the reward includes dense threat-distance shaping rather than only sparse survive/death.
+- Prey / Amphibia: `batch_size=2048`, `ent_coef=0.02` — lower than the snake's exploration needs less encouragement now that the reward includes dense threat-distance shaping rather than only sparse survive/death. Prey now uses `n_steps=128` paired with a small-pool env config (~160 envs total: 16 games x 10 max preys) for roughly 24 PPO updates per 500k training steps; amphibia is unchanged at `n_steps=512` until its own retrain.
 
 Changing any observation size invalidates saved checkpoints in `learner/models/` (SB3 `.load()` fails on shape mismatch) — retrain or delete them. See `CLAUDE.md` for the full list of files that must stay in sync.

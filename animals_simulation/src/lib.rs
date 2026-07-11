@@ -31,13 +31,19 @@ fn min_dist_to_smelled_prey(state: &GameState, pos: (f32, f32)) -> Option<f32> {
 /// Distance from `pos` to the nearest alive snake's head, or `None` if none.
 fn min_dist_to_snake_head(state: &GameState, pos: (f32, f32)) -> Option<f32> {
     let mut min_d = f32::MAX;
+    let w = state.grid_width as f32;
+    let h = state.grid_height as f32;
     for s in &state.snakes {
         if s.is_dead || s.body.is_empty() {
             continue;
         }
-        let h = s.body[0];
-        let dx = pos.0 - h.0 as f32;
-        let dy = pos.1 - h.1 as f32;
+        let head = s.body[0];
+        let head_x = head.0 as f32;
+        let head_y = head.1 as f32;
+        let mut dx = (pos.0 - head_x).abs();
+        let mut dy = (pos.1 - head_y).abs();
+        if dx > w / 2.0 { dx = w - dx; }
+        if dy > h / 2.0 { dy = h - dy; }
         let d = (dx * dx + dy * dy).sqrt();
         if d < min_d {
             min_d = d;
@@ -183,6 +189,9 @@ impl Simulation {
             .map(|(i, p)| if p.is_dead { None } else { min_dist_to_other_prey(&self.game_state, p.pos, i) })
             .collect();
 
+        // Each prey's cumulative grass eaten, to reward the per-tick grazing delta.
+        let prev_grass_eaten: Vec<f32> = self.game_state.preys.iter().map(|p| p.grass_eaten).collect();
+
         let mut all_prey_actions = prey_actions;
         all_prey_actions.extend(amphibia_actions);
         self.game_state.step(1.0, &all_prey_actions);
@@ -257,21 +266,40 @@ impl Simulation {
         }
 
         // ---- Prey / amphibia rewards + terminal observations (pre-respawn) ----
-        // Threat shaping: reward moving away from the nearest snake head. For
-        // amphibia this naturally rewards fleeing into water, where snakes
-        // crawl at 0.2 but amphibia swim at 1.0.
+        // Terminal events: reproduction (grazed to the mitosis threshold) is the
+        // jackpot outcome, not a death, so it's rewarded rather than punished;
+        // being eaten stays a flat penalty. A prey that is already long-dead
+        // (a pool slot awaiting revival) gets no reward at all, so it stops
+        // polluting the PPO batch with fake survival signal. Otherwise: threat
+        // shaping rewards moving away from the nearest snake head (for amphibia
+        // this naturally rewards fleeing into water, where snakes crawl at 0.2
+        // but amphibia swim at 1.0), plus a flat per-tick danger-zone penalty
+        // when within 10 units of a snake head; crowding penalty/shaping is
+        // unchanged; base survival reward is reduced for standing still unless
+        // that stillness is legitimate mid-graze; and grazing itself is
+        // directly rewarded via the grass-eaten delta this tick.
         let prey_reward = |idx: usize| -> f32 {
             if self.game_state.prey_died_this_tick[idx] {
-                -10.0
+                if self.game_state.preys[idx].death_by_reproduction {
+                    25.0
+                } else {
+                    -10.0
+                }
+            } else if self.game_state.preys[idx].is_dead {
+                0.0
             } else {
-                let shaping = match (
-                    prev_prey_threat[idx],
-                    min_dist_to_snake_head(&self.game_state, self.game_state.preys[idx].pos),
-                ) {
+                let grass_delta = (self.game_state.preys[idx].grass_eaten - prev_grass_eaten[idx]).max(0.0);
+
+                let cur_snake_dist = min_dist_to_snake_head(&self.game_state, self.game_state.preys[idx].pos);
+                let shaping = match (prev_prey_threat[idx], cur_snake_dist) {
                     (Some(prev), Some(cur)) => (cur - prev).clamp(-2.0, 2.0) * 0.1,
                     _ => 0.0,
                 };
-                
+                let danger_penalty = match cur_snake_dist {
+                    Some(d) if d < 10.0 => -0.15,
+                    _ => 0.0,
+                };
+
                 let (penalty, shaping_crowding) = match (
                     prev_prey_crowding[idx],
                     min_dist_to_other_prey(&self.game_state, self.game_state.preys[idx].pos, idx),
@@ -284,11 +312,12 @@ impl Simulation {
                     _ => (0.0, 0.0),
                 };
                 let mut base = 0.1;
-                if all_prey_actions[idx] == 0 {
-                    base -= 0.2; // punish standing still
+                if all_prey_actions[idx] == 0 && grass_delta <= 0.0 {
+                    base -= 0.2; // punish standing still, unless it's legitimate mid-graze
                 }
-                
-                base + shaping + penalty + shaping_crowding
+                let grass_reward = 0.5 * grass_delta;
+
+                base + grass_reward + shaping + danger_penalty + penalty + shaping_crowding
             }
         };
 

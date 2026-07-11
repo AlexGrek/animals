@@ -20,6 +20,12 @@ pub struct MenuData {
     pub snake_models: Vec<usize>, // index into available_models
     pub num_preys: usize,
     pub num_amphibias: usize,
+    // Prey / amphibia model choice as an index into a *virtual* list where 0 =
+    // "Static (no model)" and 1.. maps to `available_models[idx - 1]`. Static
+    // means no `--prey-model`/`--amphibia-model` is passed to the inference
+    // server, so those actors default to action 0 (Stand) — i.e. static prey.
+    pub prey_model: usize,
+    pub amphibia_model: usize,
 }
 
 impl Default for MenuData {
@@ -29,7 +35,49 @@ impl Default for MenuData {
             snake_models: vec![0, 0],
             num_preys: 1,
             num_amphibias: 0,
+            prey_model: 0,
+            amphibia_model: 0,
         }
+    }
+}
+
+/// Number of selectable choices for a prey/amphibia model slot (Static + every
+/// available model).
+fn model_choice_count(menu_data: &MenuData) -> usize {
+    menu_data.available_models.len() + 1
+}
+
+/// Display name for a prey/amphibia model choice index (0 = Static).
+fn model_choice_name(menu_data: &MenuData, idx: usize) -> &str {
+    if idx == 0 {
+        "Static (no model)"
+    } else {
+        menu_data.available_models[idx - 1].as_str()
+    }
+}
+
+/// Serializable name for a prey/amphibia model choice: the model filename, or
+/// the sentinel "Static" for index 0 (round-trips via `model_choice_from_name`).
+fn model_choice_save_name(menu_data: &MenuData, idx: usize) -> String {
+    if idx == 0 {
+        "Static".to_string()
+    } else {
+        menu_data.available_models[idx - 1].clone()
+    }
+}
+
+/// Resolve a saved prey/amphibia model name back to a choice index, defaulting
+/// to `default_idx` when the name is unknown and to Static (0) for "Static".
+fn model_choice_from_name(menu_data: &MenuData, name: &str, default_idx: usize) -> usize {
+    match name {
+        "" => default_idx,
+        "Static" => 0,
+        n => menu_data
+            .available_models
+            .iter()
+            .position(|m| m == n)
+            .map(|i| i + 1)
+            .unwrap_or(default_idx),
     }
 }
 
@@ -38,6 +86,12 @@ struct SavedMenuConfig {
     snakes: Vec<String>,
     num_preys: usize,
     num_amphibias: usize,
+    // Model name, or "Static" for no model. `#[serde(default)]` keeps configs
+    // written before these fields existed loadable (empty => pick the default).
+    #[serde(default)]
+    prey_model: String,
+    #[serde(default)]
+    amphibia_model: String,
 }
 
 fn config_path() -> String {
@@ -58,6 +112,8 @@ fn save_config(menu_data: &MenuData) {
         snakes: Vec::new(),
         num_preys: menu_data.num_preys,
         num_amphibias: menu_data.num_amphibias,
+        prey_model: model_choice_save_name(menu_data, menu_data.prey_model),
+        amphibia_model: model_choice_save_name(menu_data, menu_data.amphibia_model),
     };
     for &idx in &menu_data.snake_models {
         config.snakes.push(menu_data.available_models[idx].clone());
@@ -79,6 +135,8 @@ enum MenuAction {
     DecPrey,
     IncAmphibia,
     DecAmphibia,
+    ChangePreyModel(isize),
+    ChangeAmphibiaModel(isize),
     StartGame,
 }
 
@@ -147,6 +205,18 @@ fn menu_action(
                         changed = true;
                     }
                 }
+                MenuAction::ChangePreyModel(delta) => {
+                    let n = model_choice_count(&menu_data) as isize;
+                    menu_data.prey_model =
+                        ((menu_data.prey_model as isize + *delta + n) % n) as usize;
+                    changed = true;
+                }
+                MenuAction::ChangeAmphibiaModel(delta) => {
+                    let n = model_choice_count(&menu_data) as isize;
+                    menu_data.amphibia_model =
+                        ((menu_data.amphibia_model as isize + *delta + n) % n) as usize;
+                    changed = true;
+                }
                 MenuAction::StartGame => {
                     match_config.is_ai = true;
                     match_config.num_preys = menu_data.num_preys;
@@ -155,6 +225,20 @@ fn menu_action(
                     for &idx in &menu_data.snake_models {
                         let model_name = &menu_data.available_models[idx];
                         match_config.snakes.push(model_name.clone());
+                    }
+                    // Prey/amphibia model slots. A Static choice (index 0) leaves
+                    // the list empty, so no --prey-model/--amphibia-model reaches
+                    // the inference server and those actors stay still (action 0).
+                    match_config.prey_models.clear();
+                    if menu_data.num_preys > 0 && menu_data.prey_model != 0 {
+                        let name = menu_data.available_models[menu_data.prey_model - 1].clone();
+                        match_config.prey_models = vec![name; menu_data.num_preys];
+                    }
+                    match_config.amphibia_models.clear();
+                    if menu_data.num_amphibias > 0 && menu_data.amphibia_model != 0 {
+                        let name =
+                            menu_data.available_models[menu_data.amphibia_model - 1].clone();
+                        match_config.amphibia_models = vec![name; menu_data.num_amphibias];
                     }
                     save_config(&menu_data);
                     app_state.set(AppState::InGame);
@@ -197,7 +281,22 @@ fn setup_menu(mut commands: Commands, mut menu_data: ResMut<MenuData>) {
     if let Some(idx) = menu_data.available_models.iter().position(|m| m == "snake_model.zip") {
         default_idx = idx;
     }
-    
+
+    // Default prey/amphibia model choices (as virtual-list indices, 0 = Static):
+    // the trained model if present, else Static.
+    let prey_default = menu_data
+        .available_models
+        .iter()
+        .position(|m| m == "prey_model.zip")
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let amphibia_default = menu_data
+        .available_models
+        .iter()
+        .position(|m| m == "amphibia_model.zip")
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
     if let Some(saved) = load_config() {
         menu_data.snake_models.clear();
         for s in saved.snakes {
@@ -212,10 +311,15 @@ fn setup_menu(mut commands: Commands, mut menu_data: ResMut<MenuData>) {
         }
         menu_data.num_preys = saved.num_preys;
         menu_data.num_amphibias = saved.num_amphibias;
+        menu_data.prey_model = model_choice_from_name(&menu_data, &saved.prey_model, prey_default);
+        menu_data.amphibia_model =
+            model_choice_from_name(&menu_data, &saved.amphibia_model, amphibia_default);
     } else {
         for s in &mut menu_data.snake_models {
             *s = default_idx;
         }
+        menu_data.prey_model = prey_default;
+        menu_data.amphibia_model = amphibia_default;
     }
 
     build_menu_ui(&mut commands, &menu_data);
@@ -344,6 +448,32 @@ fn build_menu_ui(commands: &mut Commands, menu_data: &MenuData) {
                 spawn_text_button!(row, "+", MenuAction::IncPrey, 30.0);
             });
 
+            // Prey model selector (Static = stand still / no model)
+            panel.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            }).with_children(|row| {
+                row.spawn((
+                    Text::new("Prey model: "),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+                spawn_text_button!(row, "<", MenuAction::ChangePreyModel(-1), 30.0);
+                row.spawn(Node {
+                    width: Val::Px(200.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                }).with_children(|m_row| {
+                    m_row.spawn((
+                        Text::new(model_choice_name(menu_data, menu_data.prey_model)),
+                        TextFont { font_size: 16.0, ..default() },
+                        TextColor(Color::srgb(0.5, 0.8, 1.0)),
+                    ));
+                });
+                spawn_text_button!(row, ">", MenuAction::ChangePreyModel(1), 30.0);
+            });
+
             // Amphibia section
             panel.spawn(Node {
                 flex_direction: FlexDirection::Row,
@@ -357,6 +487,32 @@ fn build_menu_ui(commands: &mut Commands, menu_data: &MenuData) {
                 ));
                 spawn_text_button!(row, "-", MenuAction::DecAmphibia, 30.0);
                 spawn_text_button!(row, "+", MenuAction::IncAmphibia, 30.0);
+            });
+
+            // Amphibia model selector (Static = stand still / no model)
+            panel.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            }).with_children(|row| {
+                row.spawn((
+                    Text::new("Amphibia model: "),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+                spawn_text_button!(row, "<", MenuAction::ChangeAmphibiaModel(-1), 30.0);
+                row.spawn(Node {
+                    width: Val::Px(200.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                }).with_children(|m_row| {
+                    m_row.spawn((
+                        Text::new(model_choice_name(menu_data, menu_data.amphibia_model)),
+                        TextFont { font_size: 16.0, ..default() },
+                        TextColor(Color::srgb(0.5, 0.8, 1.0)),
+                    ));
+                });
+                spawn_text_button!(row, ">", MenuAction::ChangeAmphibiaModel(1), 30.0);
             });
 
             panel.spawn(Node { height: Val::Px(30.0), ..default() });

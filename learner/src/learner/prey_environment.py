@@ -77,19 +77,12 @@ class RustPreyVecEnv(VecEnv):
 
             for p in range(self.max_preys):
                 p_global_idx = start_p_idx + p
-                base_reward = prey_rew_list[p]
 
-                # Reward each surviving prey a little when a sibling is eaten.
-                other_died_reward = 0.0
-                if self.max_preys > 1:
-                    for other_p in range(self.max_preys):
-                        if other_p != p and prey_done_list[other_p]:
-                            other_died_reward += 2.0
-
-                if not prey_done_list[p]:
-                    self.all_prey_rews[p_global_idx] = base_reward + other_died_reward
-                else:
-                    self.all_prey_rews[p_global_idx] = base_reward
+                # No more per-sibling death bonus: a sibling's death is outside this
+                # agent's control, so rewarding it only adds variance, and reproduction
+                # now also sets done, which would have showered +2 on everyone per
+                # birth. The Rust reward is the single source of truth.
+                self.all_prey_rews[p_global_idx] = prey_rew_list[p]
 
                 self.all_prey_obs[p_global_idx] = prey_obs_list[p]
                 self.all_prey_dones[p_global_idx] = prey_done_list[p]

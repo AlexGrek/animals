@@ -19,8 +19,8 @@ Run-Command "task build-sim"
 cd learner
 $env:PYTHONPATH = "src"
 
-Write-Host "1. Training Snake from scratch: 500k steps with static prey..."
-Run-Command "uv run python -m learner.main --steps 500000 --num-games 2 --snakes-per-game 8 --prey-model `"none`" --amphibia-model `"none`""
+Write-Host "1. Resuming Snake: 500k steps with static prey..."
+Run-Command "uv run python -m learner.main --steps 500000 --num-games 2 --snakes-per-game 8 --resume --prey-model `"none`" --amphibia-model `"none`""
 
 Write-Host "2. Resuming Snake training: 500k steps with AI-powered prey..."
 Run-Command "uv run python -m learner.main --steps 500000 --num-games 2 --snakes-per-game 8 --resume --prey-model `"models/prey_model.zip`" --amphibia-model `"models/amphibia_model.zip`""

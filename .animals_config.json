@@ -7,5 +7,7 @@
     "snake_model.zip"
   ],
   "num_preys": 28,
-  "num_amphibias": 28
+  "num_amphibias": 28,
+  "prey_model": "prey_model.zip",
+  "amphibia_model": "amphibia_model.zip"
 }

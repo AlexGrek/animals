@@ -175,6 +175,44 @@ impl GameState {
         }
     }
 
+    /// Grid cell snake `i`'s head would land on next tick if it moved in `dir`,
+    /// mirroring the head-position update in `step` (continuous move, toroidal
+    /// wrap, then round to the nearest cell).
+    fn predicted_head_cell(&self, i: usize, dir: Direction, dt: f32) -> (i32, i32) {
+        let snake = &self.snakes[i];
+        let head_before = snake.body[0];
+        let terrain = self.map.get_terrain(head_before.0, head_before.1);
+        let speed = Species::Snake.speed_on(terrain);
+        let v = dir.to_vector();
+        let hx = (snake.head_pos.0 + v.0 as f32 * speed * dt).rem_euclid(self.grid_width as f32);
+        let hy = (snake.head_pos.1 + v.1 as f32 * speed * dt).rem_euclid(self.grid_height as f32);
+        (hx.round() as i32, hy.round() as i32)
+    }
+
+    /// Whether moving snake `i` in `dir` avoids immediate death this tick, using
+    /// the same rock/body rules as the collision pass in `step`. A move that
+    /// doesn't change cells is safe (the engine skips collision on an unchanged
+    /// cell). Head-to-head collisions with other *moving* snakes aren't predicted
+    /// here — only static obstacles (rocks, snake bodies) are.
+    fn snake_dir_is_safe(&self, i: usize, dir: Direction, dt: f32) -> bool {
+        let head_before = self.snakes[i].body[0];
+        let cell = self.predicted_head_cell(i, dir, dt);
+        if cell == head_before {
+            return true;
+        }
+        if self.map.get_terrain(cell.0, cell.1) == Terrain::Rock {
+            return false;
+        }
+        // Mirror the engine's body check: it tests every snake's current body
+        // (self, others, and not-yet-cleared corpses) before any tail pop.
+        for s in &self.snakes {
+            if s.body.contains(&cell) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn step(&mut self, dt: f32, prey_actions: &[usize]) {
         if self.game_over {
             return;
@@ -332,6 +370,32 @@ impl GameState {
                     self.preys[idx].just_revived = true;
                     self.preys[idx].death_by_reproduction = false;
                     self.preys[idx].grass_eaten = 0.0;
+                }
+            }
+        }
+
+        // In game (non-training) mode, steer snakes away from a heading that
+        // would kill them outright this tick: if the current direction runs the
+        // head into a rock or a body, turn to a safe side instead of driving
+        // into it. Training keeps the raw dynamics so the policy still learns
+        // the lethal consequences of its own choices.
+        if !self.is_training {
+            for i in 0..self.snakes.len() {
+                if self.snakes[i].is_dead || self.snakes[i].body.is_empty() {
+                    continue;
+                }
+                let dir = self.snakes[i].direction;
+                if self.snake_dir_is_safe(i, dir, dt) {
+                    continue;
+                }
+                // Both alternatives are 90° turns (a 180° reversal isn't a legal
+                // single move). Try right then left; keep the original heading if
+                // the snake is boxed in on all sides (it dies as before).
+                for cand in [dir.turn_right(), dir.turn_left()] {
+                    if self.snake_dir_is_safe(i, cand, dt) {
+                        self.snakes[i].direction = cand;
+                        break;
+                    }
                 }
             }
         }
@@ -741,29 +805,25 @@ impl GameState {
             }
         }
 
-        // Unit direction + normalized distance to the nearest alive snake head.
+        // Unit direction (torus-wrapped shortest path) + normalized distance to
+        // the nearest alive snake head.
         let mut closest: Option<(i32, i32, f32)> = None;
         for h in &snake_heads {
-            let mut dx = h.0 - prey_grid_pos.0;
-            let mut dy = h.1 - prey_grid_pos.1;
-            
-            if dx > self.grid_width / 2 { dx -= self.grid_width; }
-            else if dx < -self.grid_width / 2 { dx += self.grid_width; }
-            if dy > self.grid_height / 2 { dy -= self.grid_height; }
-            else if dy < -self.grid_height / 2 { dy += self.grid_height; }
-            
+            let (dx, dy) = self.torus_delta(prey_grid_pos, *h);
             let d = ((dx * dx + dy * dy) as f32).sqrt();
             if closest.map_or(true, |(_, _, cd)| d < cd) {
                 closest = Some((dx, dy, d));
             }
         }
 
-        let max_dim = self.grid_width.max(self.grid_height) as f32;
+        // Distance normalized over the 0-60 cell band (SMELL_RANGE-scale) where
+        // escape decisions actually happen, giving full resolution close-in
+        // rather than smearing it across the whole grid diagonal.
         if let Some((dx, dy, dist)) = closest {
             let d = dist.max(1e-6);
             obs[64] = dx as f32 / d;
             obs[65] = dy as f32 / d;
-            obs[66] = (dist / max_dim).min(1.0);
+            obs[66] = (dist / 60.0).min(1.0);
         } else {
             obs[66] = 1.0;
         }
@@ -784,7 +844,7 @@ mod tests {
     /// bug where the observation builder skipped dead snakes entirely.
     #[test]
     fn dead_snake_corpse_is_visible_as_obstacle() {
-        let mut state = GameState::new(20, 20, 2, 0, 0);
+        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, true);
 
         // Snake 1 (index 1) dies via a wall collision, leaving a body behind.
         state.snakes[1].body = vec![(5, 5), (5, 4), (5, 3)];
@@ -804,7 +864,7 @@ mod tests {
 
     #[test]
     fn prey_beyond_smell_range_is_not_sensed() {
-        let mut state = GameState::new(100, 100, 1, 1, 0);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -823,7 +883,7 @@ mod tests {
 
     #[test]
     fn prey_within_smell_range_sets_direction() {
-        let mut state = GameState::new(100, 100, 1, 1, 0);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -842,7 +902,7 @@ mod tests {
 
     #[test]
     fn target_dropped_when_prey_leaves_smell_range() {
-        let mut state = GameState::new(100, 100, 1, 1, 0);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -859,7 +919,7 @@ mod tests {
 
     #[test]
     fn smell_wraps_around_torus_edge() {
-        let mut state = GameState::new(100, 100, 1, 1, 0);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
         state.snakes[0].body = vec![(1, 50)];
         state.snakes[0].head_pos = (1.0, 50.0);
         state.snakes[0].direction = Direction::Up;

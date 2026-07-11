@@ -77,19 +77,12 @@ class RustAmphibiaVecEnv(VecEnv):
 
             for p in range(self.max_amphibias):
                 p_global_idx = start_p_idx + p
-                base_reward = amphibia_rew_list[p]
 
-                # Reward each surviving amphibia a little when a sibling is eaten.
-                other_died_reward = 0.0
-                if self.max_amphibias > 1:
-                    for other_p in range(self.max_amphibias):
-                        if other_p != p and amphibia_done_list[other_p]:
-                            other_died_reward += 2.0
-
-                if not amphibia_done_list[p]:
-                    self.all_amphibia_rews[p_global_idx] = base_reward + other_died_reward
-                else:
-                    self.all_amphibia_rews[p_global_idx] = base_reward
+                # No more per-sibling death bonus: a sibling's death is outside this
+                # agent's control, so rewarding it only adds variance, and reproduction
+                # now also sets done, which would have showered +2 on everyone per
+                # birth. The Rust reward is the single source of truth.
+                self.all_amphibia_rews[p_global_idx] = amphibia_rew_list[p]
 
                 self.all_amphibia_obs[p_global_idx] = amphibia_obs_list[p]
                 self.all_amphibia_dones[p_global_idx] = amphibia_done_list[p]

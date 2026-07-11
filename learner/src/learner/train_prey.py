@@ -85,7 +85,11 @@ def main():
                 verbose=1,
                 device="cpu",
                 batch_size=2048,
-                n_steps=512,
+                # Small-pool training config: 16 games x 10 max preys = 160 envs.
+                # 160 x 128 = 20,480 transitions per PPO update, ~24 updates over a
+                # 500k-step run, versus <1 update with the old 1600-env x 512-step
+                # setup (batch_size=2048 still divides evenly into 10 minibatches).
+                n_steps=128,
                 ent_coef=0.02, # Reward now includes threat-distance shaping (dense signal), so less entropy is needed to find escape routes than with pure sparse survival reward.
                 gamma=0.995,   # Match the snake's horizon; prey lifespans run 200-500 steps, so survival is a long-horizon objective.
             )
