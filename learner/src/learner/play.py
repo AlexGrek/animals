@@ -25,9 +25,17 @@ _ACT_LAYERS = ("features", "pi0", "pi1", "logits")
 _ACT_LEN = 128 + 256 + 256 + 3  # 643
 
 
-def register_activation_hooks(model):
+def register_activation_hooks(model, path=""):
     """Attach forward hooks to a snake PPO model, returning a dict that always
-    holds the most recent forward pass's activations (flattened per layer)."""
+    holds the most recent forward pass's activations (flattened per layer).
+
+    Older/other checkpoints may not use the custom `GridCnnExtractor` (e.g. a
+    plain SB3 `FlattenExtractor`, or a different `net_arch`) and so won't have
+    the exact submodules this schema expects. Rather than crash the whole
+    inference server, we skip whichever hooks don't apply to a given model —
+    `activation_blob` already treats a missing layer as "no data" (empty blob),
+    which the Bevy overlay renders as "waiting for inference" for that snake.
+    """
     store = {}
 
     def make_hook(name):
@@ -36,12 +44,26 @@ def register_activation_hooks(model):
         return hook
 
     policy = model.policy
-    # `features_extractor.linear` is the CNN head (Linear(2048->128)+ReLU) => 128.
-    policy.features_extractor.linear.register_forward_hook(make_hook("features"))
-    # policy_net = [Linear, Tanh, Linear, Tanh]; hook the two Tanh outputs (256 each).
-    policy.mlp_extractor.policy_net[1].register_forward_hook(make_hook("pi0"))
-    policy.mlp_extractor.policy_net[3].register_forward_hook(make_hook("pi1"))
-    policy.action_net.register_forward_hook(make_hook("logits"))  # 3 logits
+
+    # `features_extractor.linear` is the GridCnnExtractor's CNN head
+    # (Linear(2048->128)+ReLU) => 128. Absent on a stock FlattenExtractor.
+    linear = getattr(policy.features_extractor, "linear", None)
+    if linear is not None:
+        linear.register_forward_hook(make_hook("features"))
+    else:
+        logger.warning(
+            "Snake model '%s' has no GridCnnExtractor.linear; NN overlay "
+            "activations for this model will be unavailable.", path,
+        )
+
+    # policy_net = [Linear, Tanh, Linear, Tanh]; hook the two Tanh outputs.
+    # Guarded in case a checkpoint's net_arch has a different depth.
+    policy_net = policy.mlp_extractor.policy_net
+    if len(policy_net) > 1:
+        policy_net[1].register_forward_hook(make_hook("pi0"))
+    if len(policy_net) > 3:
+        policy_net[3].register_forward_hook(make_hook("pi1"))
+    policy.action_net.register_forward_hook(make_hook("logits"))
     return store
 
 
@@ -103,7 +125,7 @@ def main():
         if path not in loaded_models:
             logger.info(f"Loading snake model from {path}...")
             loaded_models[path] = PPO.load(path)
-            snake_stores[path] = register_activation_hooks(loaded_models[path])
+            snake_stores[path] = register_activation_hooks(loaded_models[path], path)
         models.append(loaded_models[path])
 
     # Handle multiple prey models
