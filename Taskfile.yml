@@ -46,6 +46,15 @@ tasks:
     cmds:
       - PYTHONPATH=src uv run python -m learner.train_amphibia --steps {{.STEPS}}
 
+  train-all-stages:
+    desc: "Run the full co-evolution pipeline (snake -> prey -> amphibia -> snake), incl. env init. Windows uses the PowerShell port."
+    dir: learner
+    cmds:
+      - cmd: bash train_all_stages.sh
+        platforms: [darwin, linux]
+      - cmd: powershell -ExecutionPolicy Bypass -File train_all_stages.ps1
+        platforms: [windows]
+
   build-sim:
     desc: Build the PyO3 rust code and install into learner venv
     dir: learner
