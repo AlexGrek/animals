@@ -37,6 +37,7 @@ pub fn toolbar_interaction(
                 ToolbarButton::ToggleNames => settings.show_names = !settings.show_names,
                 ToolbarButton::ToggleTargets => settings.show_targets = !settings.show_targets,
                 ToolbarButton::ToggleNn => settings.show_nn = !settings.show_nn,
+                ToolbarButton::ToggleModels => settings.show_models = !settings.show_models,
             }
         }
     }
@@ -51,6 +52,7 @@ pub fn toolbar_colors(
             ToolbarButton::ToggleNames => settings.show_names,
             ToolbarButton::ToggleTargets => settings.show_targets,
             ToolbarButton::ToggleNn => settings.show_nn,
+            ToolbarButton::ToggleModels => settings.show_models,
         };
 
         match *interaction {
@@ -265,5 +267,18 @@ pub fn update_nn_overlay(
     };
     for mut t in &mut action_text_q {
         t.0 = text.clone();
+    }
+}
+
+pub fn update_models_overlay(
+    settings: Res<OverlaySettings>,
+    mut panel_q: Query<&mut Node, With<ModelNamesOverlay>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let show = settings.show_models;
+    for mut node in &mut panel_q {
+        node.display = if show { Display::Flex } else { Display::None };
     }
 }

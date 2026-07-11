@@ -8,6 +8,7 @@ mod ui;
 mod render;
 mod logic;
 mod setup;
+mod menu;
 
 use bevy::prelude::*;
 use bevy::window::PresentMode;
@@ -16,37 +17,25 @@ use animals_engine::GameState;
 use constants::{GRID_WIDTH, GRID_HEIGHT};
 use resources::{
     GameEngine, TickTimer, AppStatus, RenderDirty, PrevPositions, GameSpeed, 
-    OverlaySettings, SelectedSnake, ActivationBuffer, AiWorker
+    OverlaySettings, SelectedSnake, ActivationBuffer, AiWorker, AppState, MatchConfig
 };
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut num_snakes = 2;
-    if let Some(idx) = args.iter().position(|arg| arg == "--snakes") {
-        if idx + 1 < args.len() {
-            if let Ok(n) = args[idx + 1].parse::<usize>() {
-                num_snakes = n;
-            }
-        }
-    }
+    let is_ai = args.iter().any(|arg| arg == "--ai");
+    let initial_state = if is_ai { AppState::Menu } else { AppState::InGame };
 
-    let mut num_preys = 1;
-    if let Some(idx) = args.iter().position(|arg| arg == "--preys") {
-        if idx + 1 < args.len() {
-            if let Ok(n) = args[idx + 1].parse::<usize>() {
-                num_preys = n;
-            }
-        }
-    }
+    let num_preys = 1;
+    let num_amphibias = 0;
 
-    let mut num_amphibias = 0;
-    if let Some(idx) = args.iter().position(|arg| arg == "--amphibias") {
-        if idx + 1 < args.len() {
-            if let Ok(n) = args[idx + 1].parse::<usize>() {
-                num_amphibias = n;
-            }
-        }
-    }
+    let match_config = MatchConfig {
+        is_ai,
+        num_preys,
+        num_amphibias,
+        snakes: Vec::new(),
+        prey_models: Vec::new(),
+        amphibia_models: Vec::new(),
+    };
 
     App::new()
         .add_plugins(
@@ -65,7 +54,9 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .insert_resource(ClearColor(Color::srgb(0.09, 0.10, 0.14)))
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false)))
+        .insert_resource(match_config)
+        .insert_state(initial_state)
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, 2, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false)))
         .insert_resource(TickTimer(Timer::from_seconds(0.033, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
@@ -75,7 +66,9 @@ fn main() {
         .insert_resource(OverlaySettings::default())
         .insert_resource(SelectedSnake::default())
         .insert_resource(ActivationBuffer::default())
-        .add_systems(Startup, setup::setup)
+        .add_plugins(menu::MenuPlugin)
+        .add_systems(Startup, setup::setup_camera)
+        .add_systems(OnEnter(AppState::InGame), setup::in_game_setup)
         .add_systems(
             Update,
             (
@@ -94,8 +87,10 @@ fn main() {
                 ui::speed_control_colors,
                 render::draw_targets_overlay,
                 ui::update_nn_overlay,
+                ui::update_models_overlay,
             )
-                .chain(),
+                .chain()
+                .run_if(in_state(AppState::InGame)),
         )
         .run();
 }

@@ -71,39 +71,15 @@ pub fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
 /// resources `poll_ai_connection` uses to connect to it.
 pub fn spawn_ai_server(
     commands: &mut Commands,
-    args: &[String],
+    config: &MatchConfig,
     num_snakes: usize,
     status: &mut AppStatus,
 ) {
-    let mut model_paths = Vec::new();
-    let mut prey_model_paths = Vec::new();
-    let mut amphibia_model_paths = Vec::new();
-    let mut num_preys = 1;
-    let mut num_amphibias = 0;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--model" && i + 1 < args.len() {
-            model_paths.push(args[i + 1].clone());
-            i += 1;
-        } else if args[i] == "--prey-model" && i + 1 < args.len() {
-            prey_model_paths.push(args[i + 1].clone());
-            i += 1;
-        } else if args[i] == "--amphibia-model" && i + 1 < args.len() {
-            amphibia_model_paths.push(args[i + 1].clone());
-            i += 1;
-        } else if args[i] == "--preys" && i + 1 < args.len() {
-            if let Ok(n) = args[i + 1].parse::<usize>() {
-                num_preys = n;
-            }
-            i += 1;
-        } else if args[i] == "--amphibias" && i + 1 < args.len() {
-            if let Ok(n) = args[i + 1].parse::<usize>() {
-                num_amphibias = n;
-            }
-            i += 1;
-        }
-        i += 1;
-    }
+    let model_paths = config.snakes.clone();
+    let prey_model_paths = config.prey_models.clone();
+    let amphibia_model_paths = config.amphibia_models.clone();
+    let num_preys = config.num_preys;
+    let num_amphibias = config.num_amphibias;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

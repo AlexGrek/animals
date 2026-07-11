@@ -2,6 +2,23 @@ use bevy::prelude::*;
 use animals_engine::GameState;
 use crossbeam_channel::Receiver;
 
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Menu,
+    InGame,
+}
+
+#[derive(Resource, Default)]
+pub struct MatchConfig {
+    pub is_ai: bool,
+    pub snakes: Vec<String>, // List of model paths for each snake slot
+    pub prey_models: Vec<String>,
+    pub amphibia_models: Vec<String>,
+    pub num_preys: usize,
+    pub num_amphibias: usize,
+}
+
 #[derive(Resource)]
 pub struct GameEngine(pub GameState);
 
@@ -16,11 +33,12 @@ pub struct OverlaySettings {
     pub show_names: bool,
     pub show_targets: bool,
     pub show_nn: bool,
+    pub show_models: bool,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
-        Self { show_names: false, show_targets: false, show_nn: true }
+        Self { show_names: false, show_targets: false, show_nn: true, show_models: false }
     }
 }
 

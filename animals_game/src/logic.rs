@@ -18,6 +18,7 @@ pub fn keyboard_input(
     ai_server: Option<Res<AiServerProcess>>,
     mut images: ResMut<Assets<Image>>,
     mut selected: ResMut<SelectedSnake>,
+    config: Res<MatchConfig>,
 ) {
     let num_snakes = engine.0.snakes.len();
     const DIGIT_KEYS: [(KeyCode, usize); 18] = [
@@ -48,18 +49,8 @@ pub fn keyboard_input(
 
     if keyboard_input.just_pressed(KeyCode::Space) {
         let num_snakes = engine.0.snakes.len();
-        let args: Vec<String> = std::env::args().collect();
-        let mut num_preys = 1;
-        let mut num_amphibias = 0;
-        let mut i = 0;
-        while i < args.len() {
-            if args[i] == "--preys" && i + 1 < args.len() {
-                if let Ok(n) = args[i + 1].parse::<usize>() { num_preys = n; }
-            } else if args[i] == "--amphibias" && i + 1 < args.len() {
-                if let Ok(n) = args[i + 1].parse::<usize>() { num_amphibias = n; }
-            }
-            i += 1;
-        }
+        let num_preys = config.num_preys;
+        let num_amphibias = config.num_amphibias;
         engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false);
 
         for entity in map_query.iter() {
@@ -68,15 +59,14 @@ pub fn keyboard_input(
         spawn_map(&mut commands, &engine.0, &mut images);
         dirty.0 = true;
 
-        let args: Vec<String> = std::env::args().collect();
-        let is_ai = args.iter().any(|arg| arg == "--ai");
+        let is_ai = config.is_ai;
         let needs_ai_respawn =
             is_ai && (ai_server.is_none() || matches!(*status, AppStatus::Failed(_)));
 
         if needs_ai_respawn {
             commands.remove_resource::<AiServerProcess>();
             commands.remove_resource::<PendingConnection>();
-            crate::ai::spawn_ai_server(&mut commands, &args, num_snakes, &mut status);
+            crate::ai::spawn_ai_server(&mut commands, &config, num_snakes, &mut status);
         } else if !is_ai {
             *status = AppStatus::Running;
         }

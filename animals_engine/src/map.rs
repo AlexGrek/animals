@@ -82,12 +82,12 @@ impl Map {
             self.draw_circle(cx, cy, radius, Terrain::Water);
         }
 
-        // 3. Generate Rocks (circular-like, radius 3-16)
-        let num_rocks = (rng.gen_range(5..=15) as f32 * area_scale).round() as i32;
+        // 3. Generate Rocks (circular-like, radius 2-8)
+        let num_rocks = (rng.gen_range(2..=5) as f32 * area_scale).round() as i32;
         for _ in 0..num_rocks {
             let cx = rng.gen_range(0..self.width);
             let cy = rng.gen_range(0..self.height);
-            let radius = rng.gen_range(3..=16);
+            let radius = rng.gen_range(2..=8);
             self.draw_circle(cx, cy, radius, Terrain::Rock);
         }
     }

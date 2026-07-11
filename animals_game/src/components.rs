@@ -21,7 +21,11 @@ pub enum ToolbarButton {
     ToggleNames,
     ToggleTargets,
     ToggleNn,
+    ToggleModels,
 }
+
+#[derive(Component)]
+pub struct ModelNamesOverlay;
 
 /// Which layer of the NN a given overlay cell belongs to.
 #[derive(Clone, Copy, PartialEq)]

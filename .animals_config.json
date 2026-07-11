@@ -1,0 +1,11 @@
+{
+  "snakes": [
+    "snake_model.zip",
+    "snake_model.zip",
+    "snake_model.zip",
+    "snake_model.zip",
+    "snake_model.zip"
+  ],
+  "num_preys": 28,
+  "num_amphibias": 28
+}
