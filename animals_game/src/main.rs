@@ -7,7 +7,7 @@ use animals_engine::species::Species;
 use animals_engine::map::Terrain;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, TryRecvError};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::asset::RenderAssetUsages;
 const GRID_WIDTH: i32 = 400;
@@ -433,7 +433,7 @@ fn selected_i32(selected: &SelectedSnake, num_snakes: usize) -> i32 {
 /// Spawns the background thread that owns `stream` and services inference
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
-fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize, total_amphibias: usize) -> AiWorkerHandle {
+fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
     let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, i32)>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<WorkerReply>();
 
@@ -854,7 +854,6 @@ fn poll_ai_connection(
     mut ai_worker: ResMut<AiWorker>,
     mut status: ResMut<AppStatus>,
     mut commands: Commands,
-    engine: Res<GameEngine>,
 ) {
     let Some(mut pending) = pending else { return };
 
@@ -885,9 +884,7 @@ fn poll_ai_connection(
         Ok(stream) => {
             stream.set_nodelay(true).ok();
             println!("Connected to AI inference server!");
-            let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
-            let num_preys = engine.0.preys.len() - num_amphibias;
-            ai_worker.0 = Some(spawn_ai_worker(stream, num_preys, num_amphibias));
+            ai_worker.0 = Some(spawn_ai_worker(stream));
             *status = AppStatus::Running;
             commands.remove_resource::<PendingConnection>();
         }

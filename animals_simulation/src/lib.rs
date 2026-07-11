@@ -46,6 +46,26 @@ fn min_dist_to_snake_head(state: &GameState, pos: (f32, f32)) -> Option<f32> {
     if min_d == f32::MAX { None } else { Some(min_d) }
 }
 
+fn min_dist_to_other_prey(state: &GameState, pos: (f32, f32), self_idx: usize) -> Option<f32> {
+    let mut min_d = f32::MAX;
+    let w = state.grid_width as f32;
+    let h = state.grid_height as f32;
+    for (i, p) in state.preys.iter().enumerate() {
+        if i == self_idx || p.is_dead {
+            continue;
+        }
+        let mut dx = (pos.0 - p.pos.0).abs();
+        let mut dy = (pos.1 - p.pos.1).abs();
+        if dx > w / 2.0 { dx = w - dx; }
+        if dy > h / 2.0 { dy = h - dy; }
+        let d = (dx * dx + dy * dy).sqrt();
+        if d < min_d {
+            min_d = d;
+        }
+    }
+    if min_d == f32::MAX { None } else { Some(min_d) }
+}
+
 #[pyclass]
 pub struct Simulation {
     game_state: GameState,
@@ -151,7 +171,16 @@ impl Simulation {
             .game_state
             .preys
             .iter()
-            .map(|p| min_dist_to_snake_head(&self.game_state, p.pos))
+            .map(|p| if p.is_dead { None } else { min_dist_to_snake_head(&self.game_state, p.pos) })
+            .collect();
+            
+        // Also track each prey's distance to the nearest OTHER prey (crowding)
+        let prev_prey_crowding: Vec<Option<f32>> = self
+            .game_state
+            .preys
+            .iter()
+            .enumerate()
+            .map(|(i, p)| if p.is_dead { None } else { min_dist_to_other_prey(&self.game_state, p.pos, i) })
             .collect();
 
         let mut all_prey_actions = prey_actions;
@@ -242,7 +271,20 @@ impl Simulation {
                     (Some(prev), Some(cur)) => (cur - prev).clamp(-2.0, 2.0) * 0.1,
                     _ => 0.0,
                 };
-                0.1 + shaping
+                
+                let (penalty, shaping_crowding) = match (
+                    prev_prey_crowding[idx],
+                    min_dist_to_other_prey(&self.game_state, self.game_state.preys[idx].pos, idx),
+                ) {
+                    (Some(prev), Some(cur)) => {
+                        let p = if cur < 10.0 { -0.1 } else { 0.0 };
+                        let s = (cur - prev).clamp(-2.0, 2.0) * 0.05;
+                        (p, s)
+                    },
+                    _ => (0.0, 0.0),
+                };
+                
+                0.1 + shaping + penalty + shaping_crowding
             }
         };
 

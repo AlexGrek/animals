@@ -81,6 +81,23 @@ def activation_blob(store):
         logger.warning("Activation blob size %d != expected %d", blob.shape[0], _ACT_LEN)
     return blob
 
+def check_obs_size(model, expected: int, path: str, kind: str):
+    """Fail fast with a clear message if a checkpoint's observation size no
+    longer matches the engine. Without this, a stale model only surfaces deep
+    inside `.predict()` mid-game as a cryptic shape error that kills the worker
+    thread (e.g. "Unexpected observation shape (8, 133) ... use (69,)"). Obs-size
+    changes invalidate old checkpoints — see CLAUDE.md."""
+    got = model.observation_space.shape[0]
+    if got != expected:
+        logger.error(
+            "%s model '%s' expects observation size %d, but the engine now emits "
+            "%d. This checkpoint predates the current observation layout — retrain "
+            "it or pick a model with the current shape.",
+            kind, path, got, expected,
+        )
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="TCP Inference Server for Bevy Game")
     parser.add_argument("--model", action="append", type=str, help="Path to SB3 model(s) for snakes")
@@ -125,6 +142,7 @@ def main():
         if path not in loaded_models:
             logger.info(f"Loading snake model from {path}...")
             loaded_models[path] = PPO.load(path)
+            check_obs_size(loaded_models[path], SNAKE_OBS_SIZE, path, "Snake")
             snake_stores[path] = register_activation_hooks(loaded_models[path], path)
         models.append(loaded_models[path])
 
@@ -152,6 +170,7 @@ def main():
             if path not in loaded_prey_models:
                 logger.info(f"Loading prey model from {path}...")
                 loaded_prey_models[path] = PPO.load(path)
+                check_obs_size(loaded_prey_models[path], PREY_OBS_SIZE, path, "Prey")
             prey_models.append(loaded_prey_models[path])
     else:
         prey_models = [None] * num_preys
@@ -180,6 +199,7 @@ def main():
             if path not in loaded_amphibia_models:
                 logger.info(f"Loading amphibia model from {path}...")
                 loaded_amphibia_models[path] = PPO.load(path)
+                check_obs_size(loaded_amphibia_models[path], PREY_OBS_SIZE, path, "Amphibia")
             amphibia_models.append(loaded_amphibia_models[path])
     else:
         amphibia_models = [None] * num_amphibias

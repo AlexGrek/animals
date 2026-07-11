@@ -208,12 +208,12 @@ impl GameState {
             if self.map.tiles[i] == Terrain::Grass {
                 if self.map.grass_health[i] == 0.0 {
                     self.map.grass_empty_timer[i] += 1;
-                    if self.map.grass_empty_timer[i] >= 100 {
-                        self.map.grass_health[i] += 0.01;
+                    if self.map.grass_empty_timer[i] >= 300 {
+                        self.map.grass_health[i] += 0.05;
                     }
                 } else if self.map.grass_health[i] < 1.0 {
                     self.map.grass_empty_timer[i] = 0;
-                    self.map.grass_health[i] += 0.01;
+                    self.map.grass_health[i] += 0.05;
                     if self.map.grass_health[i] > 1.0 {
                         self.map.grass_health[i] = 1.0;
                     }
@@ -288,7 +288,7 @@ impl GameState {
             let py_after = self.preys[i].pos.1.round() as i32;
             let tile_idx = (py_after.rem_euclid(self.grid_height) * self.grid_width + px_after.rem_euclid(self.grid_width)) as usize;
             if self.map.tiles[tile_idx] == Terrain::Grass && self.map.grass_health[tile_idx] > 0.0 {
-                let eat_amount = 0.1f32.min(self.map.grass_health[tile_idx]);
+                let eat_amount = 0.5f32.min(self.map.grass_health[tile_idx]);
                 self.map.grass_health[tile_idx] -= eat_amount;
                 if self.map.grass_health[tile_idx] < 0.0001 {
                     self.map.grass_health[tile_idx] = 0.0;

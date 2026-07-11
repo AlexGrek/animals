@@ -48,10 +48,11 @@ def main():
         model = PPO(
             "MlpPolicy",
             env,
+            learning_rate=3e-4,
             policy_kwargs=dict(
                 features_extractor_class=GridCnnExtractor,
                 features_extractor_kwargs=dict(grid1=PREY_GRID1, grid2=PREY_GRID2),
-                net_arch=dict(pi=[128, 128], vf=[128, 128]),
+                net_arch=dict(pi=[256, 256], vf=[256, 256]),
             ),
             verbose=1,
             device="cpu",
