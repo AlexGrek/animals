@@ -11,6 +11,11 @@ pub struct PreyState {
     pub pos: (f32, f32),
     pub is_dead: bool,
     pub species: Species,
+    pub lifespan: i32,
+    pub steps_alive: i32,
+    pub death_by_reproduction: bool,
+    pub just_revived: bool,
+    pub grass_eaten: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -21,21 +26,23 @@ pub struct GameState {
     pub grid_height: i32,
     pub map: Map,
     pub game_over: bool,
+    pub cell_changed: Vec<bool>,
     pub prey_died_this_tick: Vec<bool>,
+    pub is_training: bool,
 }
 
 impl GameState {
-    pub fn new(width: i32, height: i32, num_snakes: usize, num_preys: usize, num_amphibias: usize) -> Self {
+    pub fn new(width: i32, height: i32, num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, is_training: bool) -> Self {
         let map = Map::new(width, height);
 
-        let mut preys = Vec::new();
-        for _ in 0..num_preys {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: false, species: Species::Prey });
+        let mut preys = Vec::with_capacity(max_preys + max_amphibias);
+        for i in 0..max_preys {
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_preys, species: Species::Prey, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0 });
         }
-        for _ in 0..num_amphibias {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: false, species: Species::Amphibia });
+        for i in 0..max_amphibias {
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_amphibias, species: Species::Amphibia, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0 });
         }
-        let total_preys = num_preys + num_amphibias;
+        let total_preys = max_preys + max_amphibias;
 
         let mut state = Self {
             snakes: vec![SnakeState::new((0, 0), Direction::Up); num_snakes],
@@ -44,7 +51,9 @@ impl GameState {
             grid_height: height,
             map,
             game_over: false,
+            cell_changed: vec![false; num_snakes],
             prey_died_this_tick: vec![false; total_preys],
+            is_training,
         };
 
         for i in 0..num_snakes {
@@ -52,7 +61,9 @@ impl GameState {
             state.snakes[i] = SnakeState::new(pos, direction);
         }
         for i in 0..total_preys {
-            state.spawn_prey(i);
+            if !state.preys[i].is_dead {
+                state.spawn_prey(i);
+            }
         }
         state.update_targets();
         state
@@ -174,6 +185,12 @@ impl GameState {
         for p in &mut self.prey_died_this_tick {
             *p = false;
         }
+        for p in &mut self.preys {
+            p.death_by_reproduction = false;
+            p.just_revived = false;
+        }
+
+        let mut preys_to_revive = Vec::new();
 
         // Increment hunger and check for hunger death
         for i in 0..self.snakes.len() {
@@ -186,9 +203,54 @@ impl GameState {
             }
         }
 
+        // 0. Regenerate grass
+        for i in 0..(self.map.width * self.map.height) as usize {
+            if self.map.tiles[i] == Terrain::Grass {
+                if self.map.grass_health[i] == 0.0 {
+                    self.map.grass_empty_timer[i] += 1;
+                    if self.map.grass_empty_timer[i] >= 100 {
+                        self.map.grass_health[i] += 0.01;
+                    }
+                } else if self.map.grass_health[i] < 1.0 {
+                    self.map.grass_empty_timer[i] = 0;
+                    self.map.grass_health[i] += 0.01;
+                    if self.map.grass_health[i] > 1.0 {
+                        self.map.grass_health[i] = 1.0;
+                    }
+                }
+            }
+        }
+
         // 1. Move preys
         for i in 0..self.preys.len() {
             if self.preys[i].is_dead { continue; }
+            
+            self.preys[i].steps_alive += 1;
+            
+            if self.preys[i].grass_eaten >= 8.0 {
+                let mut snake_near = false;
+                for s in &self.snakes {
+                    if s.is_dead || s.body.is_empty() { continue; }
+                    let head = s.body[0];
+                    let (dx, dy) = self.torus_delta(head, (self.preys[i].pos.0.round() as i32, self.preys[i].pos.1.round() as i32));
+                    if dx.abs() <= 8 && dy.abs() <= 8 {
+                        snake_near = true;
+                        break;
+                    }
+                }
+                
+                if !snake_near {
+                    self.preys[i].is_dead = true;
+                    self.preys[i].death_by_reproduction = true;
+                    self.prey_died_this_tick[i] = true;
+                    
+                    for _ in 0..3 {
+                        preys_to_revive.push((self.preys[i].species, self.preys[i].pos));
+                    }
+                    continue; // Skip movement, this prey is dead
+                }
+            }
+
             let prey_action = prey_actions.get(i).copied().unwrap_or(0);
             
             let dir_vec = match prey_action {
@@ -218,6 +280,58 @@ impl GameState {
                 let terrain_after = self.map.get_terrain(px_after, py_after);
                 if terrain_after == Terrain::Rock {
                     self.preys[i].pos = prev_pos;
+                }
+            }
+
+            // Prey feeding
+            let px_after = self.preys[i].pos.0.round() as i32;
+            let py_after = self.preys[i].pos.1.round() as i32;
+            let tile_idx = (py_after.rem_euclid(self.grid_height) * self.grid_width + px_after.rem_euclid(self.grid_width)) as usize;
+            if self.map.tiles[tile_idx] == Terrain::Grass && self.map.grass_health[tile_idx] > 0.0 {
+                let eat_amount = 0.1f32.min(self.map.grass_health[tile_idx]);
+                self.map.grass_health[tile_idx] -= eat_amount;
+                if self.map.grass_health[tile_idx] < 0.0001 {
+                    self.map.grass_health[tile_idx] = 0.0;
+                    self.map.grass_empty_timer[tile_idx] = 0;
+                }
+                self.preys[i].grass_eaten += eat_amount;
+            }
+        }
+
+        // Process revived preys
+        let mut alive_preys = 0;
+        let mut alive_amphibias = 0;
+        for p in &self.preys {
+            if !p.is_dead {
+                if p.species == Species::Prey { alive_preys += 1; }
+                else { alive_amphibias += 1; }
+            }
+        }
+        
+        if alive_preys < 5 {
+            preys_to_revive.push((Species::Prey, (-1.0, -1.0)));
+        }
+        if alive_amphibias < 5 {
+            preys_to_revive.push((Species::Amphibia, (-1.0, -1.0)));
+        }
+
+        let mut rng = rand::thread_rng();
+        for (species, pos) in preys_to_revive {
+            if let Some(idx) = self.preys.iter().position(|p| p.is_dead && p.species == species && !p.death_by_reproduction) {
+                if pos.0 < 0.0 {
+                    self.spawn_prey(idx);
+                } else {
+                    let mut px = pos.0 + rng.gen_range(-1.0..=1.0);
+                    let mut py = pos.1 + rng.gen_range(-1.0..=1.0);
+                    px = px.rem_euclid(self.grid_width as f32);
+                    py = py.rem_euclid(self.grid_height as f32);
+                    self.preys[idx].pos = (px, py);
+                    self.preys[idx].is_dead = false;
+                    self.preys[idx].lifespan = rng.gen_range(200..=500);
+                    self.preys[idx].steps_alive = 0;
+                    self.preys[idx].just_revived = true;
+                    self.preys[idx].death_by_reproduction = false;
+                    self.preys[idx].grass_eaten = 0.0;
                 }
             }
         }
@@ -329,6 +443,34 @@ impl GameState {
                 self.snakes[i].body.pop();
             }
         }
+
+        // Snake Mitosis Check
+        let mut new_snakes = Vec::new();
+        let num_snakes = self.snakes.len();
+        for i in 0..num_snakes {
+            if self.snakes[i].body.len() >= 9 {
+                if self.is_training {
+                    self.snakes[i].body.truncate(3);
+                    self.snakes[i].mitosis_count += 1;
+                } else {
+                    let body2 = self.snakes[i].body[3..6].to_vec();
+                    let body3 = self.snakes[i].body[6..9].to_vec();
+                    self.snakes[i].body.truncate(3);
+                    
+                    let dir = self.snakes[i].direction;
+                    let s2 = SnakeState::new_with_body(body2, dir);
+                    let s3 = SnakeState::new_with_body(body3, dir);
+                    new_snakes.push(s2);
+                    new_snakes.push(s3);
+                }
+            }
+        }
+        
+        if !new_snakes.is_empty() {
+            let mut all_cell_changed = vec![true; new_snakes.len()];
+            self.snakes.extend(new_snakes);
+            self.cell_changed.append(&mut all_cell_changed);
+        }
     }
 
     /// Respawns every prey currently marked dead at a random free cell. Callers
@@ -336,11 +478,8 @@ impl GameState {
     /// prey's true pre-respawn terminal observation first; the visualizer just
     /// respawns immediately). Mirrors `respawn_dead()` for snakes.
     pub fn respawn_dead_preys(&mut self) {
-        for p_idx in 0..self.preys.len() {
-            if self.preys[p_idx].is_dead {
-                self.spawn_prey(p_idx);
-            }
-        }
+        // Preys are now dynamically managed via reproduction in `step()`.
+        // Dead preys stay in the inactive pool until revived.
         self.update_targets();
     }
 
@@ -375,6 +514,11 @@ impl GameState {
             if free {
                 self.preys[index].pos = (x as f32, y as f32);
                 self.preys[index].is_dead = false;
+                self.preys[index].lifespan = rng.gen_range(200..=500);
+                self.preys[index].steps_alive = 0;
+                self.preys[index].just_revived = true;
+                self.preys[index].death_by_reproduction = false;
+                self.preys[index].grass_eaten = 0.0;
                 break;
             }
         }
@@ -515,6 +659,7 @@ impl GameState {
                 } else {
                     Species::Snake.speed_on(terrain) * 0.5
                 };
+                obs[69 + idx] = self.map.grass_health[(cy_wrapped * self.grid_width + cx_wrapped) as usize];
                 idx += 1;
             }
         }
@@ -591,6 +736,7 @@ impl GameState {
                 } else {
                     prey.species.speed_on(terrain) * 0.5
                 };
+                obs[67 + idx] = self.map.grass_health[(cy_wrapped * self.grid_width + cx_wrapped) as usize];
                 idx += 1;
             }
         }

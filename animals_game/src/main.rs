@@ -34,8 +34,8 @@ struct TickTimer(pub Timer);
 /// thread so it can never stall the render loop; the main thread only does
 /// non-blocking channel sends/receives.
 struct AiWorkerHandle {
-    obs_tx: Sender<Vec<f32>>,
-    act_rx: Receiver<Vec<i32>>,
+    obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize)>,
+    act_rx: crossbeam_channel::Receiver<Vec<i32>>,
     /// True while a request is in flight and we're waiting for its actions.
     awaiting: bool,
 }
@@ -144,8 +144,32 @@ fn update_particles(
     }
 }
 
+
+#[derive(Resource)]
+struct OverlaySettings {
+    show_names: bool,
+    show_targets: bool,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self { show_names: false, show_targets: false }
+    }
+}
+
 #[derive(Component)]
-struct Apple;
+enum ToolbarButton {
+    ToggleNames,
+    ToggleTargets,
+}
+
+#[derive(Component)]
+struct SnakeHead {
+    snake_idx: usize,
+}
+
+#[derive(Component)]
+struct Apple { prey_idx: usize, }
 
 #[derive(Component)]
 struct MapTile;
@@ -198,6 +222,51 @@ fn spawn_map(commands: &mut Commands, state: &GameState, images: &mut Assets<Ima
     ));
 }
 
+fn update_map(
+    engine: Res<GameEngine>,
+    map_query: Query<&Sprite, With<MapTile>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let width = GRID_WIDTH as u32;
+    let height = GRID_HEIGHT as u32;
+
+    for sprite in map_query.iter() {
+        if let Some(image) = images.get_mut(&sprite.image) {
+            for y in 0..height {
+                for x in 0..width {
+                    let grid_x = x as i32;
+                    let grid_y = y as i32;
+                    let terrain = engine.0.map.get_terrain(grid_x, grid_y);
+                    let color = match terrain {
+                        Terrain::Grass => {
+                            let health = engine.0.map.grass_health[(grid_y * GRID_WIDTH as i32 + grid_x) as usize];
+                            // Health 1.0 -> Green [35, 81, 40], Health 0.0 -> Dirt/Yellow [127, 127, 40]
+                            let r = (127.0 - health * (127.0 - 35.0)) as u8;
+                            let g = (127.0 - health * (127.0 - 81.0)) as u8;
+                            let b = 40;
+                            [r, g, b, 255]
+                        },
+                        Terrain::Road => [127, 102, 76, 255],
+                        Terrain::Water => [51, 127, 229, 255],
+                        Terrain::Rock => [102, 102, 102, 255],
+                    };
+                    
+                    let idx = ((height - 1 - y) * width + x) as usize * 4;
+                    if let Some(data) = &mut image.data {
+                        data[idx] = color[0];
+                        data[idx + 1] = color[1];
+                        data[idx + 2] = color[2];
+                        data[idx + 3] = color[3];
+                    } else {
+                        // In case image.data is directly a Vec<u8> and the compiler got confused? No, if it was, the error wouldn't say Option.
+                        // Actually, wait, `image.data` in Bevy 0.13+ doesn't exist, it's `image.data`. Wait, Bevy `Image` does not have `data` wrapped in Option usually.
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut num_snakes = 2;
@@ -244,12 +313,13 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .insert_resource(ClearColor(Color::srgb(0.09, 0.10, 0.14)))
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias)))
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false)))
         .insert_resource(TickTimer(Timer::from_seconds(0.033, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
         .insert_resource(AppStatus::Running)
         .insert_resource(PrevPositions::default())
+        .insert_resource(OverlaySettings::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -260,8 +330,12 @@ fn main() {
                 game_tick,
                 update_status_text,
                 render_sync,
+                update_map,
                 apply_interpolation,
                 update_particles,
+                toolbar_interaction,
+                toolbar_colors,
+                draw_targets_overlay,
             )
                 .chain(),
         )
@@ -290,29 +364,32 @@ fn gather_observations(game: &GameState) -> Vec<f32> {
 /// Spawns the background thread that owns `stream` and services inference
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
-fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize) -> AiWorkerHandle {
-    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
+fn spawn_ai_worker(mut stream: TcpStream, total_preys: usize, total_amphibias: usize) -> AiWorkerHandle {
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize)>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<Vec<i32>>();
 
     std::thread::spawn(move || {
-        while let Ok(obs) = obs_rx.recv() {
-            let num_snakes = (obs.len() - total_preys * PREY_OBS_SIZE) / SNAKE_OBS_SIZE;
+        while let Ok((obs, num_snakes, num_preys, num_amphibias)) = obs_rx.recv() {
+            let mut payload = vec![0u8; 12 + obs.len() * 4];
+            payload[0..4].copy_from_slice(&(num_snakes as i32).to_le_bytes());
+            payload[4..8].copy_from_slice(&(num_preys as i32).to_le_bytes());
+            payload[8..12].copy_from_slice(&(num_amphibias as i32).to_le_bytes());
 
-            let mut payload = vec![0u8; obs.len() * 4];
             for (i, &val) in obs.iter().enumerate() {
-                payload[i * 4..i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+                payload[12 + i * 4..12 + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
             }
             if stream.write_all(&payload).is_err() {
                 break;
             }
 
-            let mut action_bytes = vec![0u8; (num_snakes + total_preys) * 4];
+            let total_preys_sent = num_preys + num_amphibias;
+            let mut action_bytes = vec![0u8; (num_snakes + total_preys_sent) * 4];
             if stream.read_exact(&mut action_bytes).is_err() {
                 break;
             }
 
-            let mut actions = Vec::with_capacity(num_snakes + total_preys);
-            for s in 0..(num_snakes + total_preys) {
+            let mut actions = Vec::with_capacity(num_snakes + total_preys_sent);
+            for s in 0..(num_snakes + total_preys_sent) {
                 let off = s * 4;
                 actions.push(i32::from_le_bytes(action_bytes[off..off + 4].try_into().unwrap()));
             }
@@ -414,7 +491,7 @@ fn setup(
             ));
             for (i, label) in labels.iter().enumerate() {
                 parent.spawn((
-                    Text::new(format!("Snake {i}  —  {label}")),
+                    Text::new(format!("Snake {i}  -  {label}")),
                     TextFont { font_size: 16.0, ..default() },
                     TextColor(snake_color(i, num_snakes)),
                 ));
@@ -426,6 +503,56 @@ fn setup(
                 TextColor(Color::srgb(0.9, 0.9, 0.2)),
                 StatusText,
             ));
+        });
+
+
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(200.0),
+            left: Val::Px(8.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Button,
+                Node {
+                    width: Val::Px(40.0),
+                    height: Val::Px(40.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.2, 0.2)),
+                ToolbarButton::ToggleNames,
+            )).with_children(|parent| {
+                parent.spawn((
+                    Text::new("N"),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+            });
+
+            parent.spawn((
+                Button,
+                Node {
+                    width: Val::Px(40.0),
+                    height: Val::Px(40.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.2, 0.2)),
+                ToolbarButton::ToggleTargets,
+            )).with_children(|parent| {
+                parent.spawn((
+                    Text::new("T"),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+            });
         });
 
     if is_ai {
@@ -532,12 +659,12 @@ fn spawn_ai_server(
         timeout: 60.0,
         stderr_lines: Vec::new(),
     });
-    *status = AppStatus::Loading("Starting AI inference server…".to_string());
+    *status = AppStatus::Loading("Starting AI inference server...".to_string());
 }
 
 /// While a [`PendingConnection`] exists, retry connecting to the Python server
 /// once per timer tick without blocking the render loop, updating the loading
-/// message with elapsed time and giving up (→ `Failed`) after the timeout.
+/// message with elapsed time and giving up (-> `Failed`) after the timeout.
 fn poll_ai_connection(
     time: Res<Time>,
     pending: Option<ResMut<PendingConnection>>,
@@ -576,8 +703,9 @@ fn poll_ai_connection(
         Ok(stream) => {
             stream.set_nodelay(true).ok();
             println!("Connected to AI inference server!");
-            let num_preys = engine.0.preys.len();
-            ai_worker.0 = Some(spawn_ai_worker(stream, num_preys));
+            let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
+            let num_preys = engine.0.preys.len() - num_amphibias;
+            ai_worker.0 = Some(spawn_ai_worker(stream, num_preys, num_amphibias));
             *status = AppStatus::Running;
             commands.remove_resource::<PendingConnection>();
         }
@@ -589,7 +717,7 @@ fn poll_ai_connection(
                 commands.remove_resource::<PendingConnection>();
             } else {
                 *status = AppStatus::Loading(format!(
-                    "Waiting for AI server to load models… {:.0}s",
+                    "Waiting for AI server to load models... {:.0}s",
                     pending.elapsed
                 ));
             }
@@ -611,9 +739,19 @@ fn keyboard_input(
         // Restart the game — works whether it's still running, over, or the
         // AI server failed.
         let num_snakes = engine.0.snakes.len();
-        let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
-        let num_preys = engine.0.preys.len() - num_amphibias;
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_amphibias);
+        let args: Vec<String> = std::env::args().collect();
+        let mut num_preys = 1;
+        let mut num_amphibias = 0;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--preys" && i + 1 < args.len() {
+                if let Ok(n) = args[i + 1].parse::<usize>() { num_preys = n; }
+            } else if args[i] == "--amphibias" && i + 1 < args.len() {
+                if let Ok(n) = args[i + 1].parse::<usize>() { num_amphibias = n; }
+            }
+            i += 1;
+        }
+        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false);
 
         // Despawn old map and spawn new map
         for entity in map_query.iter() {
@@ -693,21 +831,27 @@ fn spawn_particles_for_dead_preys(commands: &mut Commands, state: &GameState, pr
     for (p_idx, &died) in state.prey_died_this_tick.iter().enumerate() {
         if died {
             if let Some(pos) = prev.prey_pos.get(p_idx) {
+                let is_reproduction = state.preys[p_idx].death_by_reproduction;
                 let origin = Vec3::new(pos.0 * TILE_SIZE - offset_x, pos.1 * TILE_SIZE - offset_y, 1.0);
-                for _ in 0..15 {
+                for i in 0..15 {
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                    let speed = rand::random::<f32>() * 60.0 + 20.0;
+                    let speed = rand::random::<f32>() * 150.0 + 50.0;
                     let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+                    let color = if is_reproduction {
+                        if i % 2 == 0 { Color::srgba(0.0, 1.0, 0.0, 0.8) } else { Color::srgba(1.0, 1.0, 1.0, 0.8) }
+                    } else {
+                        Color::srgba(1.0, 0.0, 0.0, 0.8)
+                    };
                     commands.spawn((
                         Sprite {
-                            color: Color::srgba(1.0, 0.0, 0.0, 0.8),
+                            color,
                             custom_size: Some(Vec2::new(TILE_SIZE * 0.6, TILE_SIZE * 0.6)),
                             ..default()
                         },
                         Transform::from_translation(origin),
                         Particle {
                             velocity,
-                            lifetime: Timer::from_seconds(0.5, TimerMode::Once),
+                            lifetime: Timer::from_seconds(0.8, TimerMode::Once),
                         },
                     ));
                 }
@@ -750,8 +894,11 @@ fn game_tick(
     // slow inference slows the game slightly but never drops a render frame.
     if let Some(worker) = &mut ai_worker.0 {
         if !worker.awaiting {
-            // Prime the first request; step once its actions come back.
-            if worker.obs_tx.send(gather_observations(&engine.0)).is_err() {
+            let obs = gather_observations(&engine.0);
+            let num_snakes = engine.0.snakes.len();
+            let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
+            let num_preys = engine.0.preys.len() - num_amphibias;
+            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias)).is_err() {
                 eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
@@ -816,7 +963,11 @@ fn game_tick(
     // until the next tick, keeping the game stepping at the full tick rate.
     if !engine.0.game_over {
         if let Some(worker) = &mut ai_worker.0 {
-            if worker.obs_tx.send(gather_observations(&engine.0)).is_err() {
+            let obs = gather_observations(&engine.0);
+            let num_snakes = engine.0.snakes.len();
+            let num_amphibias = engine.0.preys.iter().filter(|p| p.species == Species::Amphibia).count();
+            let num_preys = engine.0.preys.len() - num_amphibias;
+            if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias)).is_err() {
                 eprintln!("AI worker thread stopped");
                 std::process::exit(1);
             }
@@ -853,6 +1004,7 @@ fn render_sync(
     apple_query: Query<Entity, With<Apple>>,
     mut dirty: ResMut<RenderDirty>,
     prev: Res<PrevPositions>,
+    settings: Res<OverlaySettings>,
 ) {
     // Only rebuild sprites on frames where the game state actually changed
     // (a logic tick or a restart); the sprites persist between those frames,
@@ -904,7 +1056,7 @@ fn render_sync(
                     ..default()
                 },
                 Transform::from_translation(from),
-                Apple,
+                Apple { prey_idx: p_idx },
                 Interp { from, to },
             ));
         }
@@ -940,7 +1092,7 @@ fn render_sync(
                 .filter(|from| from.distance(to) <= 2.0 * TILE_SIZE)
                 .unwrap_or(to);
 
-            commands.spawn((
+            let mut head_cmd = commands.spawn((
                 Sprite {
                     color,
                     custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
@@ -950,6 +1102,21 @@ fn render_sync(
                 SnakeSegment,
                 Interp { from, to },
             ));
+            
+            if i == 0 {
+                head_cmd.insert(SnakeHead { snake_idx: s_idx });
+                if settings.show_names {
+                    let short_label = format!("Snake {}", s_idx);
+                    head_cmd.with_children(|parent| {
+                        parent.spawn((
+                            Text2d::new(short_label),
+                            TextFont { font_size: 14.0, ..default() },
+                            TextColor(Color::WHITE),
+                            Transform::from_translation(Vec3::new(0.0, TILE_SIZE + 5.0, 1.0)),
+                        ));
+                    });
+                }
+            }
         }
     }
 }
@@ -963,5 +1130,77 @@ fn apply_interpolation(timer: Res<TickTimer>, mut query: Query<(&Interp, &mut Tr
     let a = timer.0.fraction().clamp(0.0, 1.0);
     for (interp, mut transform) in &mut query {
         transform.translation = interp.from.lerp(interp.to, a);
+    }
+}
+
+fn toolbar_interaction(
+    mut interaction_query: Query<
+        (&Interaction, &ToolbarButton),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut settings: ResMut<OverlaySettings>,
+) {
+    for (interaction, button) in &mut interaction_query {
+        if *interaction == Interaction::Pressed {
+            match button {
+                ToolbarButton::ToggleNames => settings.show_names = !settings.show_names,
+                ToolbarButton::ToggleTargets => settings.show_targets = !settings.show_targets,
+            }
+        }
+    }
+}
+
+fn toolbar_colors(
+    mut query: Query<(&Interaction, &mut BackgroundColor, &ToolbarButton), With<Button>>,
+    settings: Res<OverlaySettings>,
+) {
+    for (interaction, mut color, button) in &mut query {
+        let is_active = match button {
+            ToolbarButton::ToggleNames => settings.show_names,
+            ToolbarButton::ToggleTargets => settings.show_targets,
+        };
+
+        match *interaction {
+            Interaction::Pressed => *color = BackgroundColor(Color::srgb(0.4, 0.4, 0.4)),
+            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
+            Interaction::None => {
+                if is_active {
+                    *color = BackgroundColor(Color::srgb(0.25, 0.45, 0.25));
+                } else {
+                    *color = BackgroundColor(Color::srgb(0.2, 0.2, 0.2));
+                }
+            }
+        }
+    }
+}
+
+fn draw_targets_overlay(
+    mut gizmos: Gizmos,
+    settings: Res<OverlaySettings>,
+    engine: Res<GameEngine>,
+    head_query: Query<(&SnakeHead, &Transform)>,
+    apple_query: Query<(&Apple, &Transform)>,
+) {
+    if !settings.show_targets {
+        return;
+    }
+
+    let mut prey_transforms = std::collections::HashMap::new();
+    for (apple, transform) in &apple_query {
+        prey_transforms.insert(apple.prey_idx, transform.translation.truncate());
+    }
+
+    for (head, transform) in &head_query {
+        let snake = &engine.0.snakes[head.snake_idx];
+        if snake.is_dead { continue; }
+        if let Some(target_idx) = snake.tracked_target {
+            if let Some(&prey_pos) = prey_transforms.get(&target_idx) {
+                gizmos.line_2d(
+                    transform.translation.truncate(), 
+                    prey_pos, 
+                    Color::srgba(1.0, 0.0, 0.0, 0.6)
+                );
+            }
+        }
     }
 }

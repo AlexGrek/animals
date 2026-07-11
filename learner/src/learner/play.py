@@ -119,8 +119,7 @@ def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    bytes_expected = (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
-    floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:
         server.bind(("127.0.0.1", args.port))
@@ -143,6 +142,14 @@ def main():
 
             try:
                 while True:
+                    header = recvall(conn, 12)
+                    if not header:
+                        break
+                    num_snakes, num_preys, num_amphibias = struct.unpack('<3i', header)
+
+                    bytes_expected = (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
+                    floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
+
                     data = recvall(conn, bytes_expected)
                     if not data:
                         break
@@ -161,7 +168,7 @@ def main():
                     # instead of one forward pass per agent.
                     snake_action_map = {}
                     for path in loaded_models:
-                        idxs = [i for i in range(num_snakes) if model_paths[i] == path]
+                        idxs = [i for i in range(num_snakes) if model_paths[i % len(model_paths)] == path]
                         if idxs:
                             acts, _ = loaded_models[path].predict(snake_obs[idxs], deterministic=True)
                             for i, a in zip(idxs, acts):
@@ -171,7 +178,7 @@ def main():
                     prey_action_map = {i: 0 for i in range(num_preys)}
                     if prey_model_paths:
                         for path in set(prey_model_paths):
-                            idxs = [i for i in range(num_preys) if prey_model_paths[i] == path]
+                            idxs = [i for i in range(num_preys) if prey_model_paths[i % len(prey_model_paths)] == path]
                             if idxs:
                                 acts, _ = loaded_prey_models[path].predict(prey_obs[idxs], deterministic=True)
                                 for i, a in zip(idxs, acts):
@@ -181,7 +188,7 @@ def main():
                     amphibia_action_map = {i: 0 for i in range(num_amphibias)}
                     if amphibia_model_paths:
                         for path in set(amphibia_model_paths):
-                            idxs = [i for i in range(num_amphibias) if amphibia_model_paths[i] == path]
+                            idxs = [i for i in range(num_amphibias) if amphibia_model_paths[i % len(amphibia_model_paths)] == path]
                             if idxs:
                                 acts, _ = loaded_amphibia_models[path].predict(amphibia_obs[idxs], deterministic=True)
                                 for i, a in zip(idxs, acts):

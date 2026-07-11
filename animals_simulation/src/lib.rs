@@ -50,28 +50,30 @@ fn min_dist_to_snake_head(state: &GameState, pos: (f32, f32)) -> Option<f32> {
 pub struct Simulation {
     game_state: GameState,
     num_snakes: usize,
-    num_preys: usize,
-    num_amphibias: usize,
-    /// Per-snake set of visited 4x4-coarse grid cells, used to reward
-    /// exploration when no prey is smelled. Reset on death and on eating.
+    initial_preys: usize,
+    max_preys: usize,
+    initial_amphibias: usize,
+    max_amphibias: usize,
     visited: Vec<HashSet<(i32, i32)>>,
 }
 
 #[pymethods]
 impl Simulation {
     #[new]
-    fn new(num_snakes: usize, num_preys: usize, num_amphibias: usize) -> Self {
+    fn new(num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize) -> Self {
         Self {
-            game_state: GameState::new(100, 100, num_snakes, num_preys, num_amphibias),
+            game_state: GameState::new(100, 100, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true),
             num_snakes,
-            num_preys,
-            num_amphibias,
+            initial_preys,
+            max_preys,
+            initial_amphibias,
+            max_amphibias,
             visited: vec![HashSet::new(); num_snakes],
         }
     }
 
     fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
-        self.game_state = GameState::new(100, 100, self.num_snakes, self.num_preys, self.num_amphibias);
+        self.game_state = GameState::new(100, 100, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true);
         self.visited = vec![HashSet::new(); self.num_snakes];
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
@@ -82,7 +84,7 @@ impl Simulation {
 
     fn get_all_prey_observations(&self) -> PyResult<Vec<Vec<f32>>> {
         let mut obs = Vec::new();
-        for i in 0..self.num_preys {
+        for i in 0..self.max_preys {
             obs.push(self.game_state.get_prey_observation(i).to_vec());
         }
         Ok(obs)
@@ -90,7 +92,7 @@ impl Simulation {
 
     fn get_all_amphibia_observations(&self) -> PyResult<Vec<Vec<f32>>> {
         let mut obs = Vec::new();
-        for i in self.num_preys..(self.num_preys + self.num_amphibias) {
+        for i in self.max_preys..(self.max_preys + self.max_amphibias) {
             obs.push(self.game_state.get_prey_observation(i).to_vec());
         }
         Ok(obs)
@@ -166,7 +168,7 @@ impl Simulation {
             let done = snake.is_dead;
             let ate = !done && snake.score != prev_scores[i];
 
-            let reward = if done {
+            let mut reward = if done {
                 if snake.death_by_hunger { -5.0 } else { -3.0 }
             } else {
                 let mut r = 0.0;
@@ -206,6 +208,11 @@ impl Simulation {
                 self.visited[i].clear();
             }
 
+            if self.game_state.snakes[i].mitosis_count > 0 {
+                reward += 100.0 * self.game_state.snakes[i].mitosis_count as f32;
+                self.game_state.snakes[i].mitosis_count = 0;
+            }
+
             rewards.push(reward);
             dones.push(done);
             if done {
@@ -234,10 +241,10 @@ impl Simulation {
             }
         };
 
-        let mut prey_rewards = Vec::with_capacity(self.num_preys);
-        let mut prey_dones = Vec::with_capacity(self.num_preys);
-        let mut prey_terminal_obs = Vec::with_capacity(self.num_preys);
-        for i in 0..self.num_preys {
+        let mut prey_rewards = Vec::with_capacity(self.max_preys);
+        let mut prey_dones = Vec::with_capacity(self.max_preys);
+        let mut prey_terminal_obs = Vec::with_capacity(self.max_preys);
+        for i in 0..self.max_preys {
             let done = self.game_state.prey_died_this_tick[i];
             prey_rewards.push(prey_reward(i));
             prey_dones.push(done);
@@ -248,10 +255,10 @@ impl Simulation {
             });
         }
 
-        let mut amphibia_rewards = Vec::with_capacity(self.num_amphibias);
-        let mut amphibia_dones = Vec::with_capacity(self.num_amphibias);
-        let mut amphibia_terminal_obs = Vec::with_capacity(self.num_amphibias);
-        for i in self.num_preys..(self.num_preys + self.num_amphibias) {
+        let mut amphibia_rewards = Vec::with_capacity(self.max_amphibias);
+        let mut amphibia_dones = Vec::with_capacity(self.max_amphibias);
+        let mut amphibia_terminal_obs = Vec::with_capacity(self.max_amphibias);
+        for i in self.max_preys..(self.max_preys + self.max_amphibias) {
             let done = self.game_state.prey_died_this_tick[i];
             amphibia_rewards.push(prey_reward(i));
             amphibia_dones.push(done);
@@ -270,12 +277,12 @@ impl Simulation {
         for i in 0..self.num_snakes {
             obs.push(self.game_state.get_relative_observation(i).to_vec());
         }
-        let mut prey_obs = Vec::with_capacity(self.num_preys);
-        for i in 0..self.num_preys {
+        let mut prey_obs = Vec::with_capacity(self.max_preys);
+        for i in 0..self.max_preys {
             prey_obs.push(self.game_state.get_prey_observation(i).to_vec());
         }
-        let mut amphibia_obs = Vec::with_capacity(self.num_amphibias);
-        for i in self.num_preys..(self.num_preys + self.num_amphibias) {
+        let mut amphibia_obs = Vec::with_capacity(self.max_amphibias);
+        for i in self.max_preys..(self.max_preys + self.max_amphibias) {
             amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
         }
 

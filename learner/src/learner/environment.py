@@ -34,14 +34,19 @@ class RustMultiSnakeVecEnv(VecEnv):
 
     def __init__(self, num_games: int = 4, snakes_per_game: int = 2, training_count: Optional[int] = None,
                  existing_models: Optional[Dict[str, int]] = None,
-                 preys_per_game: int = 2, amphibias_per_game: int = 1,
-                 prey_model_path: str = "models/prey_model.zip",
-                 amphibia_model_path: str = "models/amphibia_model.zip"):
+                 preys_per_game: int = 1, max_preys: int = 20, 
+                 amphibias_per_game: int = 1, max_amphibias: int = 20,
+                 prey_model_path: Optional[str] = "models/prey_model.zip",
+                 amphibia_model_path: Optional[str] = "models/amphibia_model.zip"):
         self.num_games = num_games
         self.snakes_per_game = snakes_per_game
         self.preys_per_game = preys_per_game
+        self.max_preys = max_preys
         self.amphibias_per_game = amphibias_per_game
+        self.max_amphibias = max_amphibias
         self.total_snakes = num_games * snakes_per_game
+        self.total_preys = num_games * max_preys
+        self.total_amphibias = num_games * max_amphibias
 
         if training_count is None:
             training_count = self.total_snakes
@@ -96,7 +101,7 @@ class RustMultiSnakeVecEnv(VecEnv):
         self.amphibia_model = load_opponent(amphibia_model_path, PREY_OBS_SIZE)
 
         self.games = [
-            animals_simulation.Simulation(self.snakes_per_game, self.preys_per_game, self.amphibias_per_game)
+            animals_simulation.Simulation(snakes_per_game, preys_per_game, max_preys, amphibias_per_game, max_amphibias) 
             for _ in range(num_games)
         ]
 

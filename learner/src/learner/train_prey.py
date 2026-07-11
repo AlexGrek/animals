@@ -18,7 +18,8 @@ def main():
     parser.add_argument("--steps", type=int, default=1_000_000, help="Total timesteps to train.")
     parser.add_argument("--num-games", type=int, default=16, help="Number of parallel games.")
     parser.add_argument("--snakes-per-game", type=int, default=2, help="Number of snakes per game instance.")
-    parser.add_argument("--preys-per-game", type=int, default=1, help="Number of preys per game instance.")
+    parser.add_argument("--preys-per-game", type=int, default=2, help="Number of preys per game instance.")
+    parser.add_argument("--max-preys", type=int, default=20, help="Max preys per game instance.")
     parser.add_argument("--snake-model", type=str, default="models/snake_model.zip", help="Path to snake model to use as predator.")
     parser.add_argument("--model-path", type=str, default="models/prey_model.zip", help="Path to save the prey model.")
 
@@ -35,6 +36,7 @@ def main():
             num_games=args.num_games,
             snakes_per_game=args.snakes_per_game,
             preys_per_game=args.preys_per_game,
+            max_preys=args.max_preys,
             snake_model_path=args.snake_model
         )
 

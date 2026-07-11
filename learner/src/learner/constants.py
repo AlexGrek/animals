@@ -6,12 +6,12 @@ checkpoints in `learner/models/` (SB3 load fails on shape mismatch).
 """
 
 # 8x8 grid (64) + smelled-prey unit-direction (2) + normalized distance (1)
-# + hunger (1) + own length (1).
-SNAKE_OBS_SIZE = 69
+# + hunger (1) + own length (1) + grass health grid (64).
+SNAKE_OBS_SIZE = 133
 
-# 8x8 grid (64) + nearest-snake-head unit-direction (2) + normalized distance (1).
+# 8x8 grid (64) + nearest-snake-head unit-direction (2) + normalized distance (1) + grass health grid (64).
 # Shared by Prey and Amphibia (terrain values are species-relative).
-PREY_OBS_SIZE = 67
+PREY_OBS_SIZE = 131
 
 # Steps without eating before a snake dies of hunger.
 HUNGER_LIMIT = 1200

@@ -12,12 +12,13 @@ from learner.model_utils import load_opponent, predict_actions
 
 
 class RustAmphibiaVecEnv(VecEnv):
-    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, amphibias_per_game: int = 1, snake_model_path: str = "models/snake_model.zip"):
+    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, amphibias_per_game: int = 1, max_amphibias: int = 20, snake_model_path: str = "models/snake_model.zip"):
         self.num_games = num_games
         self.snakes_per_game = snakes_per_game
         self.amphibias_per_game = amphibias_per_game
+        self.max_amphibias = max_amphibias
         self.total_snakes = num_games * snakes_per_game
-        self.total_amphibias = num_games * amphibias_per_game
+        self.total_amphibias = num_games * max_amphibias
 
         # Frozen predator snake model; random-action fallback if missing or the
         # checkpoint predates the current observation size (see model_utils).
@@ -29,7 +30,7 @@ class RustAmphibiaVecEnv(VecEnv):
         super().__init__(self.total_amphibias, observation_space, action_space)
 
         # Instantiate simulation with amphibias only (no land prey).
-        self.games = [animals_simulation.Simulation(snakes_per_game, 0, amphibias_per_game) for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(snakes_per_game, 0, 0, amphibias_per_game, max_amphibias) for _ in range(num_games)]
 
         # Buffers
         self.all_amphibia_obs = np.zeros((self.total_amphibias, PREY_OBS_SIZE), dtype=np.float32)
@@ -46,8 +47,8 @@ class RustAmphibiaVecEnv(VecEnv):
             for s in range(self.snakes_per_game):
                 self.last_snake_obs[i * self.snakes_per_game + s] = snake_obs[s]
             amphibia_obs_list = game.get_all_amphibia_observations()
-            for p in range(self.amphibias_per_game):
-                self.all_amphibia_obs[i * self.amphibias_per_game + p] = amphibia_obs_list[p]
+            for p in range(self.max_amphibias):
+                self.all_amphibia_obs[i * self.max_amphibias + p] = amphibia_obs_list[p]
         return np.copy(self.all_amphibia_obs)
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -62,8 +63,8 @@ class RustAmphibiaVecEnv(VecEnv):
             start_s_idx = i * self.snakes_per_game
             s_actions = snake_actions[start_s_idx:start_s_idx + self.snakes_per_game]
 
-            start_p_idx = i * self.amphibias_per_game
-            a_actions = self.actions[start_p_idx:start_p_idx + self.amphibias_per_game].tolist()
+            start_p_idx = i * self.max_amphibias
+            a_actions = self.actions[start_p_idx:start_p_idx + self.max_amphibias].tolist()
 
             (snake_obs, _, _, _,
              _, _, _,
@@ -74,14 +75,14 @@ class RustAmphibiaVecEnv(VecEnv):
             for s in range(self.snakes_per_game):
                 self.last_snake_obs[start_s_idx + s] = snake_obs[s]
 
-            for p in range(self.amphibias_per_game):
+            for p in range(self.max_amphibias):
                 p_global_idx = start_p_idx + p
                 base_reward = amphibia_rew_list[p]
 
                 # Reward each surviving amphibia a little when a sibling is eaten.
                 other_died_reward = 0.0
-                if self.amphibias_per_game > 1:
-                    for other_p in range(self.amphibias_per_game):
+                if self.max_amphibias > 1:
+                    for other_p in range(self.max_amphibias):
                         if other_p != p and amphibia_done_list[other_p]:
                             other_died_reward += 2.0
 

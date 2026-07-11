@@ -15,6 +15,8 @@ pub struct Map {
     pub width: i32,
     pub height: i32,
     pub tiles: Vec<Terrain>,
+    pub grass_health: Vec<f32>,
+    pub grass_empty_timer: Vec<i32>,
 }
 
 impl Map {
@@ -23,6 +25,8 @@ impl Map {
             width,
             height,
             tiles: vec![Terrain::Grass; (width * height) as usize],
+            grass_health: vec![1.0; (width * height) as usize],
+            grass_empty_timer: vec![0; (width * height) as usize],
         };
         map.generate();
         map
@@ -37,7 +41,11 @@ impl Map {
     pub fn set_terrain(&mut self, x: i32, y: i32, terrain: Terrain) {
         let x = x.rem_euclid(self.width);
         let y = y.rem_euclid(self.height);
-        self.tiles[(y * self.width + x) as usize] = terrain;
+        let idx = (y * self.width + x) as usize;
+        self.tiles[idx] = terrain;
+        if terrain != Terrain::Grass {
+            self.grass_health[idx] = 0.0;
+        }
     }
 
     fn generate(&mut self) {

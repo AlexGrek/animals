@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--num-games", type=int, default=16, help="Number of parallel games.")
     parser.add_argument("--snakes-per-game", type=int, default=2, help="Number of snakes per game instance.")
     parser.add_argument("--amphibias-per-game", type=int, default=1, help="Number of amphibias per game instance.")
+    parser.add_argument("--max-amphibias", type=int, default=20, help="Max amphibias per game instance.")
     parser.add_argument("--snake-model", type=str, default="models/snake_model.zip", help="Path to snake model to use as predator.")
     parser.add_argument("--model-path", type=str, default="models/amphibia_model.zip", help="Path to save the amphibia model.")
 
@@ -35,6 +36,7 @@ def main():
             num_games=args.num_games,
             snakes_per_game=args.snakes_per_game,
             amphibias_per_game=args.amphibias_per_game,
+            max_amphibias=args.max_amphibias,
             snake_model_path=args.snake_model
         )
 

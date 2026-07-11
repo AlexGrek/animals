@@ -14,6 +14,7 @@ pub struct SnakeState {
     pub death_by_hunger: bool,
     pub steps_since_last_eat: u32,
     pub tracked_target: Option<usize>,
+    pub mitosis_count: u32,
 }
 
 impl SnakeState {
@@ -38,6 +39,25 @@ impl SnakeState {
             death_by_hunger: false,
             steps_since_last_eat: 0,
             tracked_target: None,
+            mitosis_count: 0,
+        }
+    }
+
+    pub fn new_with_body(body: Vec<(i32, i32)>, direction: Direction) -> Self {
+        Self {
+            head_pos: (body[0].0 as f32, body[0].1 as f32),
+            body,
+            direction,
+            is_dead: false,
+            score: 0,
+            kills: 0,
+            death_by_wall: false,
+            death_by_self: false,
+            death_by_opponent: false,
+            death_by_hunger: false,
+            steps_since_last_eat: 0,
+            tracked_target: None,
+            mitosis_count: 0,
         }
     }
 }

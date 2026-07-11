@@ -13,10 +13,10 @@ pub use species::Species;
 
 /// Size of a snake's observation vector. Mirrored in
 /// `learner/src/learner/constants.py` — keep in sync.
-pub const SNAKE_OBS_SIZE: usize = 69;
+pub const SNAKE_OBS_SIZE: usize = 133;
 /// Size of a prey's observation vector (shared by Prey and Amphibia). Mirrored
 /// in `learner/src/learner/constants.py` — keep in sync.
-pub const PREY_OBS_SIZE: usize = 67;
+pub const PREY_OBS_SIZE: usize = 131;
 /// Steps a snake can go without eating before it dies of hunger.
 pub const HUNGER_LIMIT: u32 = 1200;
 /// Smell radius: a snake only senses prey within this torus-wrapped

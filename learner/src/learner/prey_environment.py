@@ -12,12 +12,13 @@ from learner.model_utils import load_opponent, predict_actions
 
 
 class RustPreyVecEnv(VecEnv):
-    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, preys_per_game: int = 1, snake_model_path: str = "models/snake_model.zip"):
+    def __init__(self, num_games: int = 4, snakes_per_game: int = 2, preys_per_game: int = 1, max_preys: int = 20, snake_model_path: str = "models/snake_model.zip"):
         self.num_games = num_games
         self.snakes_per_game = snakes_per_game
         self.preys_per_game = preys_per_game
+        self.max_preys = max_preys
         self.total_snakes = num_games * snakes_per_game
-        self.total_preys = num_games * preys_per_game
+        self.total_preys = num_games * max_preys
 
         # Frozen predator snake model; random-action fallback if missing or the
         # checkpoint predates the current observation size (see model_utils).
@@ -29,7 +30,7 @@ class RustPreyVecEnv(VecEnv):
         super().__init__(self.total_preys, observation_space, action_space)
 
         # Instantiate simulation with multiple preys, no amphibias.
-        self.games = [animals_simulation.Simulation(snakes_per_game, preys_per_game, 0) for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(snakes_per_game, preys_per_game, max_preys, 0, 0) for _ in range(num_games)]
 
         # Buffers
         self.all_prey_obs = np.zeros((self.total_preys, PREY_OBS_SIZE), dtype=np.float32)
@@ -46,8 +47,8 @@ class RustPreyVecEnv(VecEnv):
             for s in range(self.snakes_per_game):
                 self.last_snake_obs[i * self.snakes_per_game + s] = snake_obs[s]
             prey_obs_list = game.get_all_prey_observations()
-            for p in range(self.preys_per_game):
-                self.all_prey_obs[i * self.preys_per_game + p] = prey_obs_list[p]
+            for p in range(self.max_preys):
+                self.all_prey_obs[i * self.max_preys + p] = prey_obs_list[p]
         return np.copy(self.all_prey_obs)
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -62,27 +63,26 @@ class RustPreyVecEnv(VecEnv):
             start_s_idx = i * self.snakes_per_game
             s_actions = snake_actions[start_s_idx:start_s_idx + self.snakes_per_game]
 
-            start_p_idx = i * self.preys_per_game
-            p_actions = self.actions[start_p_idx:start_p_idx + self.preys_per_game].tolist()
+            start_p_idx = i * self.max_preys
+            a_actions = self.actions[start_p_idx:start_p_idx + self.max_preys].tolist()
 
             (snake_obs, _, _, _,
              prey_obs_list, prey_rew_list, prey_done_list,
              _, _, _,
-             prey_terminal_list, _) = game.step(s_actions, p_actions, [])
+             prey_terminal_list, _) = game.step(s_actions, a_actions, [])
 
             # Save next snake obs
             for s in range(self.snakes_per_game):
                 self.last_snake_obs[start_s_idx + s] = snake_obs[s]
 
-            for p in range(self.preys_per_game):
+            for p in range(self.max_preys):
                 p_global_idx = start_p_idx + p
                 base_reward = prey_rew_list[p]
 
-                # Reward each surviving prey a little when a sibling is eaten
-                # (predator is busy elsewhere — a genuinely safer state).
+                # Reward each surviving prey a little when a sibling is eaten.
                 other_died_reward = 0.0
-                if self.preys_per_game > 1:
-                    for other_p in range(self.preys_per_game):
+                if self.max_preys > 1:
+                    for other_p in range(self.max_preys):
                         if other_p != p and prey_done_list[other_p]:
                             other_died_reward += 2.0
 
