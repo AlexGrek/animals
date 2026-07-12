@@ -28,7 +28,7 @@ pub const HUNGER_LIMIT: u32 = 1200;
 /// without retraining, at the cost of a trained model never seeing the
 /// hunger observation climb past `HUNGER_DEATH_LIMIT / HUNGER_LIMIT` before
 /// dying (its "danger" calibration was learned over the full 0..1 range).
-pub const HUNGER_DEATH_LIMIT: u32 = 900;
+pub const HUNGER_DEATH_LIMIT: u32 = HUNGER_LIMIT;
 /// Smell radius: a snake only senses prey within this torus-wrapped
 /// Manhattan distance. Mirrored in `learner/src/learner/constants.py`.
 pub const SMELL_RANGE: i32 = 60;

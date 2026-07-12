@@ -145,15 +145,21 @@ One more place the Bevy game previously diverged from the training simulation, f
   would encounter a steering override in the game it never experienced in training — visually
   indistinguishable from the policy itself circling around an obstacle.
 
-Note that the game's AI mode is **not** a faithful mirror of the training regime and is not
-meant to be: training uses fixed-count self-play (dead snakes respawn in place every tick via
-`respawn_dead()`, so SB3 sees continuous per-agent episodes), whereas the visualizer runs a
-**self-balancing ecosystem** — dead snakes are removed outright (`engine.remove_dead_snakes()`,
-no respawn, no lingering corpse) and the population rises and falls through births (mitosis) and
-deaths (hunger/collision). The trained policy still acts on purely local per-snake observations
-(which don't encode total population), so it transfers fine; the population count just isn't
-pinned. This is a deliberate divergence, not a parity bug. Corpses do **not** persist in either
-regime, so the model never faces the out-of-distribution "permanent `-0.5` obstacle" state.
+Note that the game is **not** a faithful mirror of the training regime and is not meant to be:
+training uses fixed-count self-play (dead snakes respawn in place every tick via `respawn_dead()`,
+so SB3 sees continuous per-agent episodes), whereas the visualizer runs a **self-balancing
+ecosystem** — each tick calls `engine.remove_dead_snakes()`, which reaps a dead snake's *entity*
+(removed from `snakes`: uncounted, undriven, memory bounded so the game cycles indefinitely) but
+leaves its body cells in `GameState.corpses` as a static `-0.5` obstacle that living snakes see
+and die on. Population rises and falls through births (mitosis: a snake at body length ≥ 12 splits
+into 3 in non-training mode) and deaths (hunger/collision/corpse). The trained policy acts on
+purely local per-snake observations (which don't encode total population), so it transfers fine;
+the population count just isn't pinned. This is a deliberate divergence, not a parity bug. A corpse
+reads as `-0.5` — exactly what a live enemy body reads as, and what a dead snake's body read as
+back when dead snakes lingered in the `snakes` Vec — so the model's input distribution is
+unchanged. `game_over` fires only when snakes hit 0 (total predator extinction in AI mode; the
+player's death in manual mode). Corpses currently persist for the life of the match; a decay timer
+(à la grass regrow) would be the clean addition if very-long runs should reclaim the cells.
 
 `test.py` also reports circling-diagnostic stats per snake (`action_distribution`, `turn_bias`,
 `longest_turn_run`, `unique_patches_per_life`, `unique_patches_per_100_ticks`,

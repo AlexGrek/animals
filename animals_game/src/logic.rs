@@ -158,11 +158,12 @@ pub fn game_tick(
                     engine.0.step(1.0, &prey_actions);
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
                     engine.0.respawn_dead_preys();
-                    // Ecosystem model: dead snakes leave the world (no respawn,
-                    // no lingering corpse). Population is governed by births
-                    // (mitosis) vs deaths (hunger/collision), so it self-balances
-                    // against prey abundance. game_over below still fires if the
-                    // predators go fully extinct (count hits 0).
+                    // Ecosystem model: a dead snake's entity is reaped (no
+                    // respawn) but its body is left behind as a static corpse
+                    // obstacle. Population is governed by births (mitosis) vs
+                    // deaths (hunger/collision), so it self-balances against prey
+                    // abundance. game_over below still fires only if the predators
+                    // go fully extinct (count hits 0).
                     engine.0.remove_dead_snakes();
                     worker.awaiting = false;
                     stats.inference_steps += 1;
