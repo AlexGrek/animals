@@ -16,7 +16,7 @@ pub use species::Species;
 pub const SNAKE_OBS_SIZE: usize = 197;
 /// Size of a prey's observation vector (shared by Prey and Amphibia). Mirrored
 /// in `learner/src/learner/constants.py` — keep in sync.
-pub const PREY_OBS_SIZE: usize = 131;
+pub const PREY_OBS_SIZE: usize = 132;
 pub const CORPSEFAG_OBS_SIZE: usize = 18;
 /// Normalizes the hunger observation scalar (`obs[67]`) and the hunger reward
 /// penalty. Kept separate from `HUNGER_DEATH_LIMIT` so the actual starvation

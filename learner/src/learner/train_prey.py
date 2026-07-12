@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from learner.prey_environment import RustPreyVecEnv
 from learner.policy import GridCnnExtractor
-from learner.constants import PREY_GRID1, PREY_GRID2, PREY_OBS_SIZE, PREY_NUM_ACTIONS
+from learner.constants import PREY_GRID1, PREY_GRID2, PREY_OBS_SIZE, PREY_NUM_ACTIONS, SNAKE_OBS_SIZE
 from stable_baselines3 import PPO
 
 def main():
@@ -21,21 +21,44 @@ def main():
     parser.add_argument("--num-games", type=int, default=16, help="Number of parallel games.")
     parser.add_argument("--snakes-per-game", type=int, default=2, help="Number of snakes per game instance.")
     parser.add_argument("--preys-per-game", type=int, default=32, help="Number of preys per game instance.")
-    parser.add_argument("--max-preys", type=int, default=100, help="Max preys per game instance.")
+    parser.add_argument("--max-preys", type=int, default=10, help="Max preys per game instance.")
     parser.add_argument("--num-procs", type=int, default=1, help="Number of background processes to spawn for environment stepping.")
     parser.add_argument("--snake-model", type=str, default="models/snake_model.zip", help="Path to snake model to use as predator.")
     parser.add_argument("--model-path", type=str, default="models/prey_model.zip", help="Path to save the prey model.")
     parser.add_argument("--resume", action="store_true", help="Resume training from model-path if it exists.")
     parser.add_argument("--existing", action="append", type=str, help="Existing model config in format path:count (per game). e.g. models/prey_v1.zip:10")
+    parser.add_argument("--allow-static-opponent", action="store_true", help="Allow training to proceed even if the frozen snake model is missing or has a stale observation shape (falls back to a static, non-adversarial snake). Intended only for intentional bootstrap runs.")
 
     args = parser.parse_args()
 
-    from learner.model_utils import resolve_model_path, normalize_model_path
+    from learner.model_utils import resolve_model_path, normalize_model_path, load_opponent
     args.model_path = normalize_model_path(args.model_path)
     if args.snake_model:
         args.snake_model = resolve_model_path(args.snake_model) or normalize_model_path(args.snake_model)
 
     try:
+        # Pre-flight: prey training is only meaningful against an adversarial
+        # snake. If the frozen snake model is missing or its observation shape
+        # is stale, load_opponent() (and thus RustPreyVecEnv) silently falls
+        # back to a static "do nothing" snake, letting prey "succeed" trivially
+        # with no warning beyond a log line. Fail loudly unless the caller
+        # explicitly opted into a static-opponent bootstrap run.
+        if args.snake_model and load_opponent(args.snake_model, SNAKE_OBS_SIZE) is None:
+            if not args.allow_static_opponent:
+                raise FileNotFoundError(
+                    f"Frozen snake model '{args.snake_model}' is missing or has a stale "
+                    f"observation shape (expected {SNAKE_OBS_SIZE}). Training prey against "
+                    "a non-adversarial (static) snake would silently invalidate results. "
+                    "Pass --allow-static-opponent to intentionally train against a static "
+                    "snake (e.g. for a cold-start bootstrap)."
+                )
+            logger.warning(
+                "!!! Frozen snake model '%s' is missing or shape-stale; proceeding with "
+                "--allow-static-opponent, so prey will train against a STATIC "
+                "(non-adversarial) snake. Results are only meaningful for bootstrap runs. !!!",
+                args.snake_model,
+            )
+
         if args.num_games % args.num_procs != 0:
             raise ValueError(f"--num-games ({args.num_games}) must be evenly divisible by --num-procs ({args.num_procs}).")
         games_per_proc = args.num_games // args.num_procs
@@ -88,7 +111,7 @@ def main():
         if args.resume and os.path.exists(args.model_path):
             logger.info(f"Resuming Prey training from {args.model_path}...")
             custom_objects = {
-                "n_steps": 16,
+                "n_steps": 128,
                 "batch_size": 2560,
             }
             model = PPO.load(args.model_path, env=env, custom_objects=custom_objects)
@@ -107,11 +130,11 @@ def main():
                 verbose=1,
                 device="cpu",
                 batch_size=2560,
-                # 16 games * 100 max preys = 1600 envs
-                # 1600 * 16 = 25,600 transitions per PPO update
-                n_steps=16,
+                # 16 games * 10 max preys = 160 envs
+                # 160 * 128 = 20,480 transitions per PPO update (8 minibatches of 2560)
+                n_steps=128,
                 ent_coef=0.02, # Reward now includes threat-distance shaping (dense signal), so less entropy is needed to find escape routes than with pure sparse survival reward.
-                gamma=0.995,   # Match the snake's horizon; prey lifespans run 200-500 steps, so survival is a long-horizon objective.
+                gamma=0.995,   # Match the snake's horizon; prey never die of old age (lifespan is never read), so survival is an effectively infinite-horizon objective bounded only by predation.
             )
         
         logger.info(f"Starting Prey training for {args.steps} steps...")

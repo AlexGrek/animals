@@ -6,13 +6,17 @@ use crate::species::Species;
 use crate::direction::Direction;
 use crate::{HUNGER_DEATH_LIMIT, HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE, VISIT_HORIZON};
 
+/// Cumulative `grass_eaten` at which a prey/amphibia reproduces (see the
+/// trigger in `GameState::step`). Also used as the denominator for the
+/// reproduction-progress observation scalar (`get_prey_observation`'s
+/// `[67]`), so the two stay in lockstep by construction.
+pub const PREY_REPRODUCTION_GRASS: f32 = 25.0;
+
 #[derive(Clone, Debug)]
 pub struct PreyState {
     pub pos: (f32, f32),
     pub is_dead: bool,
     pub species: Species,
-    pub lifespan: i32,
-    pub steps_alive: i32,
     pub death_by_reproduction: bool,
     pub just_revived: bool,
     pub grass_eaten: f32,
@@ -69,10 +73,10 @@ impl GameState {
 
         let mut preys = Vec::with_capacity(max_preys + max_amphibias);
         for i in 0..max_preys {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_preys, species: Species::Prey, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_preys, species: Species::Prey, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
         }
         for i in 0..max_amphibias {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_amphibias, species: Species::Amphibia, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_amphibias, species: Species::Amphibia, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
         }
         let total_preys = max_preys + max_amphibias;
 
@@ -381,9 +385,7 @@ impl GameState {
         for i in 0..self.preys.len() {
             if self.preys[i].is_dead { continue; }
 
-            self.preys[i].steps_alive += 1;
-
-            if self.preys[i].grass_eaten >= 250.0 {
+            if self.preys[i].grass_eaten >= PREY_REPRODUCTION_GRASS {
                 let mut snake_near = false;
                 for s in &self.snakes {
                     if s.is_dead || s.body.is_empty() { continue; }
@@ -404,6 +406,8 @@ impl GameState {
 
                     if is_under_cap {
                         self.preys[i].grass_eaten = 0.0;
+                        self.preys[i].death_by_reproduction = true;
+                        self.prey_died_this_tick[i] = true;
                         preys_to_revive.push((self.preys[i].species, self.preys[i].pos, Some(self.preys[i].family_id)));
                         if self.preys[i].species == Species::Prey {
                             alive_preys += 1;
@@ -481,8 +485,6 @@ impl GameState {
                     py = py.rem_euclid(self.grid_height as f32);
                     self.preys[idx].pos = (px, py);
                     self.preys[idx].is_dead = false;
-                    self.preys[idx].lifespan = rng.gen_range(200..=500);
-                    self.preys[idx].steps_alive = 0;
                     self.preys[idx].just_revived = true;
                     self.preys[idx].death_by_reproduction = false;
                     self.preys[idx].grass_eaten = 0.0;
@@ -494,8 +496,6 @@ impl GameState {
                     pos: (0.0, 0.0),
                     is_dead: true,
                     species,
-                    lifespan: 0,
-                    steps_alive: 0,
                     death_by_reproduction: false,
                     just_revived: false,
                     grass_eaten: 0.0,
@@ -514,8 +514,6 @@ impl GameState {
                     py = py.rem_euclid(self.grid_height as f32);
                     self.preys[idx].pos = (px, py);
                     self.preys[idx].is_dead = false;
-                    self.preys[idx].lifespan = rng.gen_range(200..=500);
-                    self.preys[idx].steps_alive = 0;
                     self.preys[idx].just_revived = true;
                     self.preys[idx].death_by_reproduction = false;
                     self.preys[idx].grass_eaten = 0.0;
@@ -885,11 +883,24 @@ impl GameState {
                     }
                 }
             }
+            // Spawn-camping guard: don't drop a prey inside a live snake's
+            // kill box. The population-floor path can otherwise place a
+            // fresh prey adjacent to a snake head, where it dies before it
+            // can act. Mirrors the reproduction "no snake nearby" gate above.
+            if free {
+                for s in &self.snakes {
+                    if s.is_dead || s.body.is_empty() { continue; }
+                    let head = s.body[0];
+                    let (dx, dy) = self.torus_delta(head, pos);
+                    if dx.abs() <= 8 && dy.abs() <= 8 {
+                        free = false;
+                        break;
+                    }
+                }
+            }
             if free {
                 self.preys[index].pos = (x as f32, y as f32);
                 self.preys[index].is_dead = false;
-                self.preys[index].lifespan = rng.gen_range(200..=500);
-                self.preys[index].steps_alive = 0;
                 self.preys[index].just_revived = true;
                 self.preys[index].death_by_reproduction = false;
                 self.preys[index].grass_eaten = 0.0;
@@ -1183,9 +1194,13 @@ impl GameState {
     ///   reads ~0.1 to a Prey but ~0.5 to an Amphibia).
     /// - `[64]`/`[65]` — unit direction (east / north) to the nearest alive
     ///   snake head, zero when no snake is alive.
-    /// - `[66]` — distance to that head normalized by the larger grid
-    ///   dimension (`1.0` when no snake is alive). Global threat sense the prey
-    ///   needs to flee predators outside its local 8x8 patch.
+    /// - `[66]` — distance to that head, normalized over a 0-150 cell band
+    ///   (`1.0` when no snake is alive or farther than 150 cells away) so
+    ///   distant threats stay distinguishable instead of all saturating to
+    ///   the same "far away" reading.
+    /// - `[67]` — reproduction progress: `grass_eaten / PREY_REPRODUCTION_GRASS`,
+    ///   clamped to `1.0`. Makes the reproduction goal (see `step`) directly
+    ///   observable instead of latent state the policy has to infer blind.
     pub fn get_prey_observation(&self, prey_index: usize) -> [f32; PREY_OBS_SIZE] {
         let mut obs = [0.0; PREY_OBS_SIZE];
         let prey = &self.preys[prey_index];
@@ -1220,7 +1235,7 @@ impl GameState {
                 } else {
                     prey.species.speed_on(terrain) * 0.5
                 };
-                obs[67 + idx] = self.map.grass_health[(cy_wrapped * self.grid_width + cx_wrapped) as usize];
+                obs[68 + idx] = self.map.grass_health[(cy_wrapped * self.grid_width + cx_wrapped) as usize];
                 idx += 1;
             }
         }
@@ -1236,17 +1251,22 @@ impl GameState {
             }
         }
 
-        // Distance normalized over the 0-60 cell band (SMELL_RANGE-scale) where
-        // escape decisions actually happen, giving full resolution close-in
-        // rather than smearing it across the whole grid diagonal.
+        // Distance normalized over a 0-150 cell band, giving full resolution
+        // close-in without every snake beyond a short radius saturating to
+        // the same "far away" 1.0 reading.
         if let Some((dx, dy, dist)) = closest {
             let d = dist.max(1e-6);
             obs[64] = dx as f32 / d;
             obs[65] = dy as f32 / d;
-            obs[66] = (dist / 60.0).min(1.0);
+            obs[66] = (dist / 150.0).min(1.0);
         } else {
             obs[66] = 1.0;
         }
+
+        // Reproduction progress: how close this prey is to the grass-eaten
+        // threshold that triggers reproduction (see `PREY_REPRODUCTION_GRASS`
+        // and the trigger in `step`).
+        obs[67] = (prey.grass_eaten / PREY_REPRODUCTION_GRASS).min(1.0);
 
         obs
     }

@@ -10,9 +10,10 @@ checkpoints in `learner/models/` (SB3 load fails on shape mismatch).
 # + 8x8 coarse visitation-recency grid (64).
 SNAKE_OBS_SIZE = 197
 
-# 8x8 grid (64) + nearest-snake-head unit-direction (2) + normalized distance (1) + grass health grid (64).
+# 8x8 grid (64) + nearest-snake-head unit-direction (2) + normalized distance (1)
+# + reproduction-progress scalar (1) + grass health grid (64).
 # Shared by Prey and Amphibia (terrain values are species-relative).
-PREY_OBS_SIZE = 131
+PREY_OBS_SIZE = 132
 
 # Steps without eating before a snake dies of hunger.
 HUNGER_LIMIT = 1200
@@ -47,7 +48,7 @@ SNAKE_GRID1 = (0, GRID_CELLS)
 SNAKE_GRID2 = (69, 133)
 SNAKE_GRID3 = (133, 197)
 
-# Prey/Amphibia: terrain grid [0:64), scalars [64:67) (snake dir/dist),
-# grass-health grid [67:131).
+# Prey/Amphibia: terrain grid [0:64), scalars [64:68) (snake dir/dist,
+# reproduction progress), grass-health grid [68:132).
 PREY_GRID1 = (0, GRID_CELLS)
-PREY_GRID2 = (PREY_OBS_SIZE - GRID_CELLS, PREY_OBS_SIZE)  # (67, 131)
+PREY_GRID2 = (PREY_OBS_SIZE - GRID_CELLS, PREY_OBS_SIZE)  # (68, 132)
