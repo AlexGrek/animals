@@ -1,12 +1,12 @@
-use bevy::prelude::*;
 use animals_engine::{GameState, RelativeAction};
+use bevy::prelude::*;
 use crossbeam_channel::TryRecvError;
 
+use crate::ai::queue_ai_inference;
 use crate::components::*;
 use crate::constants::*;
-use crate::resources::*;
-use crate::ai::queue_ai_inference;
 use crate::render::{spawn_map, spawn_particles_for_dead_preys};
+use crate::resources::*;
 
 pub fn keyboard_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -22,12 +22,24 @@ pub fn keyboard_input(
 ) {
     let num_snakes = engine.0.snakes.len();
     const DIGIT_KEYS: [(KeyCode, usize); 18] = [
-        (KeyCode::Digit1, 0), (KeyCode::Digit2, 1), (KeyCode::Digit3, 2),
-        (KeyCode::Digit4, 3), (KeyCode::Digit5, 4), (KeyCode::Digit6, 5),
-        (KeyCode::Digit7, 6), (KeyCode::Digit8, 7), (KeyCode::Digit9, 8),
-        (KeyCode::Numpad1, 0), (KeyCode::Numpad2, 1), (KeyCode::Numpad3, 2),
-        (KeyCode::Numpad4, 3), (KeyCode::Numpad5, 4), (KeyCode::Numpad6, 5),
-        (KeyCode::Numpad7, 6), (KeyCode::Numpad8, 7), (KeyCode::Numpad9, 8),
+        (KeyCode::Digit1, 0),
+        (KeyCode::Digit2, 1),
+        (KeyCode::Digit3, 2),
+        (KeyCode::Digit4, 3),
+        (KeyCode::Digit5, 4),
+        (KeyCode::Digit6, 5),
+        (KeyCode::Digit7, 6),
+        (KeyCode::Digit8, 7),
+        (KeyCode::Digit9, 8),
+        (KeyCode::Numpad1, 0),
+        (KeyCode::Numpad2, 1),
+        (KeyCode::Numpad3, 2),
+        (KeyCode::Numpad4, 3),
+        (KeyCode::Numpad5, 4),
+        (KeyCode::Numpad6, 5),
+        (KeyCode::Numpad7, 6),
+        (KeyCode::Numpad8, 7),
+        (KeyCode::Numpad9, 8),
     ];
     for (key, idx) in DIGIT_KEYS {
         if keyboard_input.just_pressed(key) && idx < num_snakes {
@@ -52,7 +64,17 @@ pub fn keyboard_input(
         let num_preys = config.num_preys;
         let num_amphibias = config.num_amphibias;
         let is_ai = config.is_ai;
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false, !is_ai);
+        engine.0 = GameState::new(
+            GRID_WIDTH,
+            GRID_HEIGHT,
+            num_snakes,
+            num_preys,
+            num_preys.max(100),
+            num_amphibias,
+            num_amphibias.max(100),
+            false,
+            !is_ai,
+        );
 
         for entity in map_query.iter() {
             commands.entity(entity).despawn();
@@ -116,7 +138,10 @@ pub fn game_tick(
             }
 
             match worker.act_rx.try_recv() {
-                Ok(crate::resources::WorkerReply { actions, activations }) => {
+                Ok(crate::resources::WorkerReply {
+                    actions,
+                    activations,
+                }) => {
                     act_buffer.0 = activations;
                     let num_snakes = engine.0.snakes.len();
                     for s in 0..num_snakes {
@@ -126,20 +151,19 @@ pub fn game_tick(
                             engine.0.set_direction(s, dir);
                         }
                     }
-                    let prey_actions: Vec<usize> = actions[num_snakes..]
-                        .iter()
-                        .map(|&a| a as usize)
-                        .collect();
+                    let prey_actions: Vec<usize> =
+                        actions[num_snakes..].iter().map(|&a| a as usize).collect();
                     prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
                     prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
                     engine.0.step(1.0, &prey_actions);
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
-                    // AI-driven snakes are respawned in place (matching the training
-                    // simulation) rather than left as permanent corpses, so the game
-                    // doesn't drift into the out-of-distribution "static obstacle"
-                    // state the policy never trained against.
-                    engine.0.respawn_dead();
                     engine.0.respawn_dead_preys();
+                    // Ecosystem model: dead snakes leave the world (no respawn,
+                    // no lingering corpse). Population is governed by births
+                    // (mitosis) vs deaths (hunger/collision), so it self-balances
+                    // against prey abundance. game_over below still fires if the
+                    // predators go fully extinct (count hits 0).
+                    engine.0.remove_dead_snakes();
                     worker.awaiting = false;
                     stats.inference_steps += 1;
                 }
@@ -157,6 +181,10 @@ pub fn game_tick(
             engine.0.step(1.0, &prey_actions);
             spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
             engine.0.respawn_dead_preys();
+            // Same ecosystem model as AI mode: dead snakes become static corpses
+            // and leave the active list (so the player's death still reduces the
+            // count to 0 -> game_over, with the corpse left visible on the grid).
+            engine.0.remove_dead_snakes();
         }
 
         let alive_count = engine.0.snakes.iter().filter(|s| !s.is_dead).count();
@@ -164,9 +192,9 @@ pub fn game_tick(
             engine.0.game_over = true;
             break;
         }
-        
+
         dirty.0 = true;
-        
+
         if let Some(worker) = &mut ai_worker.0 {
             if !worker.awaiting && !engine.0.game_over {
                 queue_ai_inference(&engine.0, worker, &selected);

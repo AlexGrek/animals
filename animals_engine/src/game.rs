@@ -32,6 +32,12 @@ pub struct GameState {
     pub is_training: bool,
     pub auto_steer: bool,
     pub steps: u64,
+    /// Grid cells occupied by dead snakes' bodies (the visualizer's ecosystem
+    /// model). A dead snake's *entity* is removed from `snakes` by
+    /// `remove_dead_snakes`, but its body cells linger here as a static obstacle
+    /// that living snakes read as `-0.5` and die on collision. Stays empty in
+    /// training (which respawns instead of reaping), so it costs nothing there.
+    pub corpses: HashSet<(i32, i32)>,
 }
 
 impl GameState {
@@ -59,6 +65,7 @@ impl GameState {
             is_training,
             auto_steer,
             steps: 0,
+            corpses: HashSet::new(),
         };
 
         for i in 0..num_snakes {
@@ -173,6 +180,31 @@ impl GameState {
         self.update_targets();
     }
 
+    /// Reaps every dead snake: its *entity* leaves the world entirely (removed
+    /// from `snakes`, so it's uncounted, undriven, and can't grow memory), but
+    /// its body cells are left behind in `corpses` as a static obstacle. This
+    /// is the visualizer's ecosystem model: snake population is governed purely
+    /// by births (mitosis, `step`) and deaths (hunger/collision/corpse), so it
+    /// self-balances against prey abundance rather than being pinned to a fixed
+    /// count — letting the game cycle indefinitely.
+    ///
+    /// `cell_changed` (a per-snake parallel Vec) is resized to match. Snake
+    /// indices shift when earlier snakes are removed; callers that track snakes
+    /// by index across ticks (e.g. the Bevy renderer) rebuild their index-keyed
+    /// state each frame, so this is safe there.
+    pub fn remove_dead_snakes(&mut self) {
+        for snake in self.snakes.iter().filter(|s| s.is_dead) {
+            self.corpses.extend(snake.body.iter().copied());
+        }
+        self.snakes.retain(|s| !s.is_dead);
+        // `cell_changed` is a per-snake parallel Vec that's only ever written
+        // (never read across ticks), so just resize it to match rather than
+        // filtering in lockstep — keeps the invariant `cell_changed.len() ==
+        // snakes.len()` without depending on its stale contents.
+        self.cell_changed.resize(self.snakes.len(), false);
+        self.update_targets();
+    }
+
     pub fn set_direction(&mut self, snake_index: usize, new_dir: Direction) {
         if let Some(snake) = self.snakes.get_mut(snake_index) {
             if snake.direction.opposite() != new_dir {
@@ -275,13 +307,13 @@ impl GameState {
                 else { alive_amphibias += 1; }
             }
         }
-        
+
         // 1. Move preys
         for i in 0..self.preys.len() {
             if self.preys[i].is_dead { continue; }
-            
+
             self.preys[i].steps_alive += 1;
-            
+
             if self.preys[i].grass_eaten >= 150.0 {
                 let mut snake_near = false;
                 for s in &self.snakes {
@@ -293,7 +325,7 @@ impl GameState {
                         break;
                     }
                 }
-                
+
                 if !snake_near {
                     let is_under_cap = if self.preys[i].species == Species::Prey {
                         alive_preys < 200
@@ -314,7 +346,7 @@ impl GameState {
             }
 
             let prey_action = prey_actions.get(i).copied().unwrap_or(0);
-            
+
             let dir_vec = match prey_action {
                 1 => (0, 1),   // Up
                 2 => (1, 0),   // Right
@@ -403,7 +435,7 @@ impl GameState {
                 self.preys.push(new_prey);
                 let idx = self.preys.len() - 1;
                 self.prey_died_this_tick.push(false);
-                
+
                 if pos.0 < 0.0 {
                     self.spawn_prey(idx);
                 } else {
@@ -460,18 +492,18 @@ impl GameState {
                 new_heads[i] = snake.body[0];
                 continue;
             }
-            
+
             let q_head_before = snake.body[0];
             let terrain = self.map.get_terrain(q_head_before.0, q_head_before.1);
             let speed = Species::Snake.speed_on(terrain);
             let dir_vec = snake.direction.to_vector();
-            
+
             snake.head_pos.0 += dir_vec.0 as f32 * speed * dt;
             snake.head_pos.1 += dir_vec.1 as f32 * speed * dt;
-            
+
             snake.head_pos.0 = snake.head_pos.0.rem_euclid(self.grid_width as f32);
             snake.head_pos.1 = snake.head_pos.1.rem_euclid(self.grid_height as f32);
-            
+
             let q_head_after = (snake.head_pos.0.round() as i32, snake.head_pos.1.round() as i32);
             new_heads[i] = q_head_after;
             if q_head_after != q_head_before {
@@ -527,6 +559,14 @@ impl GameState {
                     }
                     break;
                 }
+            }
+
+            // Corpse collision: a reaped dead snake's leftover body is still a
+            // solid obstacle (visualizer ecosystem model). No kill is credited —
+            // its owner is already gone.
+            if !self.snakes[i].is_dead && self.corpses.contains(&head) {
+                self.snakes[i].is_dead = true;
+                self.snakes[i].death_by_opponent = true;
             }
         }
 
@@ -588,7 +628,7 @@ impl GameState {
                     let body3 = self.snakes[i].body[6..9].to_vec();
                     let body4 = self.snakes[i].body[9..12].to_vec();
                     self.snakes[i].body.truncate(3);
-                    
+
                     let dir = self.snakes[i].direction;
                     let family_id = self.snakes[i].family_id;
                     let s2 = SnakeState::new_with_body(body2, dir, family_id);
@@ -600,7 +640,7 @@ impl GameState {
                 }
             }
         }
-        
+
         if !new_snakes.is_empty() {
             let mut all_cell_changed = vec![true; new_snakes.len()];
             self.snakes.extend(new_snakes);
@@ -624,7 +664,7 @@ impl GameState {
             let x = rng.gen_range(0..self.grid_width);
             let y = rng.gen_range(0..self.grid_height);
             let pos = (x, y);
-            
+
             let terrain = self.map.get_terrain(x, y);
             if terrain == Terrain::Rock || terrain == Terrain::Water {
                 continue;
@@ -722,9 +762,9 @@ impl GameState {
     /// Snake observation (`SNAKE_OBS_SIZE` floats):
     /// - `[0..64)`  — 8x8 grid in the snake's rotated frame (4 cells ahead,
     ///   3 behind, 4 right, 3 left). Cell encoding: prey `1.0`; wall/rock/own
-    ///   body `-1.0`; **alive** enemy head `-0.8`; any enemy body cell
-    ///   (including a dead snake's frozen corpse — still a solid obstacle in
-    ///   `step()`'s collision check) `-0.5`; else passable terrain
+    ///   body `-1.0`; **alive** enemy head `-0.8`; any enemy body cell, or a
+    ///   `corpses` cell (a reaped dead snake's leftover body — still a solid
+    ///   obstacle in `step()`'s collision check), `-0.5`; else passable terrain
     ///   `Species::Snake.speed_on(terrain) * 0.5`.
     /// - `[64]`/`[65]` — unit direction to the nearest prey the snake can
     ///   smell (forward / right components), zero when nothing is smelled.
@@ -798,7 +838,10 @@ impl GameState {
                     -1.0
                 } else if enemy_heads.contains(&cell) {
                     -0.8
-                } else if enemy_bodies.contains(&cell) {
+                } else if enemy_bodies.contains(&cell) || self.corpses.contains(&cell) {
+                    // A corpse (dead snake's leftover body) is a solid obstacle
+                    // just like a living snake's body — same -0.5 the model saw
+                    // when dead snakes still lived in the `snakes` Vec.
                     -0.5
                 } else {
                     Species::Snake.speed_on(terrain) * 0.5
@@ -944,6 +987,63 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `remove_dead_snakes` drops exactly the dead snakes' *entities* (keeping
+    /// the living ones in order, `cell_changed` length-matched), while leaving
+    /// their body cells behind in `corpses`. This is the ecosystem primitive:
+    /// population shrinks on death (no respawn) so it self-balances against
+    /// births (mitosis), and the reaped body stays as a static obstacle.
+    #[test]
+    fn remove_dead_snakes_drops_only_the_dead() {
+        // 100x100 (not 20x20): a small map's random terrain can leave no free
+        // spawn cell, hanging `GameState::new`'s spawn loop — a pre-existing
+        // flakiness the larger smell tests avoid.
+        let mut state = GameState::new(100, 100, 3, 0, 0, 0, 0, false, false);
+        assert_eq!(state.snakes.len(), 3);
+        assert_eq!(state.cell_changed.len(), 3);
+
+        // Kill the middle snake; tag the survivors so we can check ordering.
+        state.snakes[0].score = 10;
+        state.snakes[1].body = vec![(7, 7), (7, 6), (7, 5)];
+        state.snakes[1].is_dead = true;
+        state.snakes[2].score = 20;
+
+        state.remove_dead_snakes();
+
+        assert_eq!(state.snakes.len(), 2, "one dead snake should be removed");
+        assert_eq!(state.cell_changed.len(), 2, "cell_changed must stay length-matched");
+        assert!(state.snakes.iter().all(|s| !s.is_dead), "no dead snakes may remain");
+        assert_eq!(state.snakes[0].score, 10, "surviving snakes keep their order");
+        assert_eq!(state.snakes[1].score, 20);
+        // The reaped snake's body cells become corpse obstacles.
+        for cell in [(7, 7), (7, 6), (7, 5)] {
+            assert!(state.corpses.contains(&cell), "reaped body cell {cell:?} must become a corpse");
+        }
+    }
+
+    /// A corpse cell (dead snake reaped out of the `snakes` Vec, body left in
+    /// `corpses`) must still read as an obstacle (`-0.5`) in a living snake's
+    /// observation — the same value a live enemy body reads as, so the model's
+    /// input distribution is unchanged.
+    #[test]
+    fn corpse_cell_is_visible_as_obstacle() {
+        let mut state = GameState::new(100, 100, 1, 0, 0, 0, 0, false, false);
+        // Force all-grass terrain so the tested cell is deterministically not a
+        // rock (rock takes precedence over the corpse marker in the obs).
+        state.map.tiles = vec![Terrain::Grass; (state.grid_width * state.grid_height) as usize];
+
+        // A corpse sits 3 cells straight ahead of snake 0.
+        state.snakes[0].body = vec![(5, 8)];
+        state.snakes[0].head_pos = (5.0, 8.0);
+        state.snakes[0].direction = Direction::Down; // facing toward (5,5)
+        state.corpses.insert((5, 5));
+
+        let obs = state.get_relative_observation(0);
+
+        // (5,5) is 3 ahead of (5,8) facing Down -> f=3, r=0 -> idx (3+3)*8+(0+3)=51
+        let idx = ((3 + 3) * 8 + (0 + 3)) as usize;
+        assert_eq!(obs[idx], -0.5, "a corpse cell must read as an obstacle in the observation");
+    }
 
     /// The Bevy visualizer never calls `respawn_dead()`: a dead snake's body
     /// stays frozen on the grid as a corpse until the whole match ends. A
