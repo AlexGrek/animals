@@ -4,7 +4,7 @@ use crate::map::{Map, Terrain};
 use crate::snake::SnakeState;
 use crate::species::Species;
 use crate::direction::Direction;
-use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE, VISIT_HORIZON};
+use crate::{HUNGER_DEATH_LIMIT, HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE, VISIT_HORIZON};
 
 #[derive(Clone, Debug)]
 pub struct PreyState {
@@ -241,7 +241,7 @@ impl GameState {
         for i in 0..self.snakes.len() {
             if !self.snakes[i].is_dead {
                 self.snakes[i].steps_since_last_eat += 1;
-                if self.snakes[i].steps_since_last_eat >= HUNGER_LIMIT {
+                if self.snakes[i].steps_since_last_eat >= HUNGER_DEATH_LIMIT {
                     self.snakes[i].is_dead = true;
                     self.snakes[i].death_by_hunger = true;
                 }

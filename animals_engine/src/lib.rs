@@ -17,8 +17,18 @@ pub const SNAKE_OBS_SIZE: usize = 197;
 /// Size of a prey's observation vector (shared by Prey and Amphibia). Mirrored
 /// in `learner/src/learner/constants.py` — keep in sync.
 pub const PREY_OBS_SIZE: usize = 131;
-/// Steps a snake can go without eating before it dies of hunger.
+/// Normalizes the hunger observation scalar (`obs[67]`) and the hunger reward
+/// penalty. Kept separate from `HUNGER_DEATH_LIMIT` so the actual starvation
+/// timing can be tuned without changing what a trained model reads as "close
+/// to starving" (an already-trained policy's hunger sense was calibrated
+/// against this value; changing it would require a retrain to stay correct).
 pub const HUNGER_LIMIT: u32 = 1200;
+/// Steps a snake can go without eating before it actually dies of hunger.
+/// Lower than `HUNGER_LIMIT` on purpose: this speeds up starvation in play
+/// without retraining, at the cost of a trained model never seeing the
+/// hunger observation climb past `HUNGER_DEATH_LIMIT / HUNGER_LIMIT` before
+/// dying (its "danger" calibration was learned over the full 0..1 range).
+pub const HUNGER_DEATH_LIMIT: u32 = 500;
 /// Smell radius: a snake only senses prey within this torus-wrapped
 /// Manhattan distance. Mirrored in `learner/src/learner/constants.py`.
 pub const SMELL_RANGE: i32 = 60;

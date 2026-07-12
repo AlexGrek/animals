@@ -52,7 +52,7 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 
 ## Hunger and Eating
 
-- `HUNGER_LIMIT = 1200` steps without eating kills a snake (`animals_engine/src/lib.rs`).
+- `HUNGER_DEATH_LIMIT = 500` steps without eating kills a snake (`animals_engine/src/lib.rs`). Kept separate from `HUNGER_LIMIT = 1200`, which only normalizes the hunger observation scalar (`[67]`) and the hunger reward penalty — an already-trained model's sense of "close to starving" is calibrated against `HUNGER_LIMIT`'s 0..1 range, so lowering the actual death timing via a second constant tunes starvation speed without invalidating that calibration (no retrain needed). The tradeoff: a trained model never sees the hunger observation climb past `HUNGER_DEATH_LIMIT / HUNGER_LIMIT` (~0.42 at current values) before dying, since it starves before the signal reaches 1.0.
 - Snakes eat any prey within a 3×3 radius of their head (Chebyshev distance ≤ 1), not just an exact cell match — this makes eating slightly forgiving of the 1-cell-per-tick grid movement.
 
 ## Episode Termination: Per-Snake and Per-Prey Respawn
