@@ -117,8 +117,8 @@ def main():
         amphibia_models = [None] * num_amphibias
 
     logger.info(f"Initializing simulation with {num_snakes} snakes, {num_preys} preys, and {num_amphibias} amphibias...")
-    sim = animals_simulation.Simulation(num_snakes, num_preys, num_preys, num_amphibias, num_amphibias)
-    obs_list = sim.reset()
+    sim = animals_simulation.Simulation(num_snakes, num_preys, num_preys, num_amphibias, num_amphibias, 0)
+    obs_list, _, _, _ = sim.reset()
 
     total_apples = [0] * num_snakes
     total_kills_events = [0] * num_snakes
@@ -181,7 +181,7 @@ def main():
         (obs_list, rewards, dones, _terminal_obs,
          _, prey_rewards, prey_dones,
          _, amphibia_rewards, amphibia_dones,
-         _, _) = sim.step(actions, prey_actions, amphibia_actions)
+         _, _) = sim.step(actions, prey_actions, amphibia_actions, [])
         steps += 1
 
         stats_now = sim.get_stats()

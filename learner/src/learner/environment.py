@@ -101,7 +101,7 @@ class RustMultiSnakeVecEnv(VecEnv):
         self.amphibia_model = load_opponent(amphibia_model_path, PREY_OBS_SIZE)
 
         self.games = [
-            animals_simulation.Simulation(snakes_per_game, preys_per_game, max_preys, amphibias_per_game, max_amphibias) 
+            animals_simulation.Simulation(snakes_per_game, preys_per_game, max_preys, amphibias_per_game, max_amphibias, 0) 
             for _ in range(num_games)
         ]
 
@@ -116,7 +116,7 @@ class RustMultiSnakeVecEnv(VecEnv):
 
     def reset(self) -> np.ndarray:
         for i, game in enumerate(self.games):
-            obs_list = game.reset()
+            obs_list, _, _, _ = game.reset()
             for s in range(self.snakes_per_game):
                 self.all_obs[i * self.snakes_per_game + s] = obs_list[s]
             
@@ -177,9 +177,13 @@ class RustMultiSnakeVecEnv(VecEnv):
             end_idx = start_idx + self.snakes_per_game
             actions_list = all_actions[start_idx:end_idx].tolist()
 
-            obs_list, rews_list, dones_list, terminal_obs_list, *_ = game.step(
-                actions_list, prey_per_game[i], amphibia_per_game[i]
+            snakes_data, _, _, _ = game.step(
+                actions_list, prey_per_game[i], amphibia_per_game[i], []
             )
+            obs_list = snakes_data[0]
+            rews_list = snakes_data[1]
+            dones_list = snakes_data[2]
+            terminal_obs_list = snakes_data[3]
 
             for s in range(self.snakes_per_game):
                 idx = start_idx + s

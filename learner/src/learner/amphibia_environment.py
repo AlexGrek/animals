@@ -30,7 +30,7 @@ class RustAmphibiaVecEnv(VecEnv):
         super().__init__(self.total_amphibias, observation_space, action_space)
 
         # Instantiate simulation with amphibias only (no land prey).
-        self.games = [animals_simulation.Simulation(snakes_per_game, 0, 0, amphibias_per_game, max_amphibias) for _ in range(num_games)]
+        self.games = [animals_simulation.Simulation(snakes_per_game, 0, 0, amphibias_per_game, max_amphibias, 0) for _ in range(num_games)]
 
         # Buffers
         self.all_amphibia_obs = np.zeros((self.total_amphibias, PREY_OBS_SIZE), dtype=np.float32)
@@ -43,7 +43,7 @@ class RustAmphibiaVecEnv(VecEnv):
 
     def reset(self) -> np.ndarray:
         for i, game in enumerate(self.games):
-            snake_obs = game.reset()
+            snake_obs, _, _, _ = game.reset()
             for s in range(self.snakes_per_game):
                 self.last_snake_obs[i * self.snakes_per_game + s] = snake_obs[s]
             amphibia_obs_list = game.get_all_amphibia_observations()

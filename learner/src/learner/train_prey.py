@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--snake-model", type=str, default="models/snake_model.zip", help="Path to snake model to use as predator.")
     parser.add_argument("--model-path", type=str, default="models/prey_model.zip", help="Path to save the prey model.")
     parser.add_argument("--resume", action="store_true", help="Resume training from model-path if it exists.")
+    parser.add_argument("--existing", action="append", type=str, help="Existing model config in format path:count (per game). e.g. models/prey_v1.zip:10")
 
     args = parser.parse_args()
 
@@ -46,8 +47,24 @@ def main():
         threads = max(1, (os.cpu_count() or 4) // (args.num_procs + 1)) if args.num_procs > 1 else (os.cpu_count() or 4)
         torch.set_num_threads(threads)
 
-        logger.info(f"Creating Prey Vector Env with {args.num_games} games across {args.num_procs} process(es) ({threads} torch threads/process)...")
+        # Parse existing models (counts are per game for prey)
+        existing_models = {}
+        if args.existing:
+            for ex in args.existing:
+                parts = ex.split(":")
+                if len(parts) != 2:
+                    raise ValueError(f"Invalid --existing format: {ex}. Expected path:count")
+                path = parts[0]
+                count = int(parts[1])
+                
+                resolved = resolve_model_path(path)
+                if resolved is None:
+                    raise FileNotFoundError(f"Existing model not found at {path}")
+                
+                existing_models[resolved] = existing_models.get(resolved, 0) + count
 
+        logger.info(f"Creating Prey Vector Env with {args.num_games} games across {args.num_procs} process(es) ({torch.get_num_threads()} torch threads/process)...")
+        
         def make_env_fn(proc_idx):
             def _init():
                 return RustPreyVecEnv(
@@ -55,6 +72,7 @@ def main():
                     snakes_per_game=args.snakes_per_game,
                     preys_per_game=args.preys_per_game,
                     max_preys=args.max_preys,
+                    existing_models=existing_models,
                     snake_model_path=args.snake_model,
                 )
             return _init
@@ -69,7 +87,11 @@ def main():
         logger.info("Initializing PPO agent for PREY with device='cpu'...")
         if args.resume and os.path.exists(args.model_path):
             logger.info(f"Resuming Prey training from {args.model_path}...")
-            model = PPO.load(args.model_path, env=env)
+            custom_objects = {
+                "n_steps": 16,
+                "batch_size": 2560,
+            }
+            model = PPO.load(args.model_path, env=env, custom_objects=custom_objects)
         else:
             # The observation holds two 8x8 grids; a small CNN encoder preserves their
             # spatial structure, then a compact MLP head maps to the 5 discrete moves.
@@ -84,12 +106,10 @@ def main():
                 ),
                 verbose=1,
                 device="cpu",
-                batch_size=2048,
-                # Small-pool training config: 16 games x 10 max preys = 160 envs.
-                # 160 x 128 = 20,480 transitions per PPO update, ~24 updates over a
-                # 500k-step run, versus <1 update with the old 1600-env x 512-step
-                # setup (batch_size=2048 still divides evenly into 10 minibatches).
-                n_steps=128,
+                batch_size=2560,
+                # 16 games * 100 max preys = 1600 envs
+                # 1600 * 16 = 25,600 transitions per PPO update
+                n_steps=16,
                 ent_coef=0.02, # Reward now includes threat-distance shaping (dense signal), so less entropy is needed to find escape routes than with pure sparse survival reward.
                 gamma=0.995,   # Match the snake's horizon; prey lifespans run 200-500 steps, so survival is a long-horizon objective.
             )
