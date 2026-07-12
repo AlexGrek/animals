@@ -66,10 +66,12 @@ class RustAmphibiaVecEnv(VecEnv):
             start_p_idx = i * self.max_amphibias
             a_actions = self.actions[start_p_idx:start_p_idx + self.max_amphibias].tolist()
 
-            (snake_obs, _, _, _,
-             _, _, _,
-             amphibia_obs_list, amphibia_rew_list, amphibia_done_list,
-             _, amphibia_terminal_list) = game.step(s_actions, [], a_actions)
+            snakes_data, preys_data, amphibias_data, corpsefags_data = game.step(s_actions, [], a_actions, [])
+            snake_obs = snakes_data[0]
+            amphibia_obs_list = amphibias_data[0]
+            amphibia_rew_list = amphibias_data[1]
+            amphibia_done_list = amphibias_data[2]
+            amphibia_terminal_list = amphibias_data[3]
 
             # Save next snake obs
             for s in range(self.snakes_per_game):

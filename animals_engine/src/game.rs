@@ -56,6 +56,11 @@ pub struct GameState {
     pub corpses: HashSet<(i32, i32)>,
     pub eggs: Vec<EggState>,
     pub corpsefags: Vec<CorpsefagState>,
+    pub dead_snake_heads: Vec<(f32, f32)>,
+    pub cf_births: Vec<(f32, f32)>,
+    pub snake_births: Vec<(f32, f32)>,
+    pub cf_eats: Vec<(f32, f32)>,
+    pub egg_eats: Vec<(f32, f32)>,
 }
 
 impl GameState {
@@ -86,6 +91,11 @@ impl GameState {
             corpses: HashSet::new(),
             eggs: Vec::new(),
             corpsefags: Vec::with_capacity(num_corpsefags),
+            dead_snake_heads: Vec::new(),
+            cf_births: Vec::new(),
+            snake_births: Vec::new(),
+            cf_eats: Vec::new(),
+            egg_eats: Vec::new(),
         };
 
         for i in 0..num_snakes {
@@ -97,7 +107,7 @@ impl GameState {
                 state.spawn_prey(i);
             }
         }
-        for i in 0..num_corpsefags {
+        for _ in 0..num_corpsefags {
             state.spawn_corpsefag();
         }
         state.update_targets();
@@ -271,6 +281,9 @@ impl GameState {
                 return false;
             }
         }
+        if self.corpses.contains(&cell) {
+            return false;
+        }
         true
     }
 
@@ -285,6 +298,13 @@ impl GameState {
         for p in &mut self.prey_died_this_tick {
             *p = false;
         }
+        self.dead_snake_heads.clear();
+        self.cf_births.clear();
+        self.snake_births.clear();
+        self.cf_eats.clear();
+        self.egg_eats.clear();
+        
+        let was_dead_snakes: Vec<bool> = self.snakes.iter().map(|s| s.is_dead).collect();
         for p in &mut self.preys {
             p.death_by_reproduction = false;
             p.just_revived = false;
@@ -363,7 +383,7 @@ impl GameState {
 
             self.preys[i].steps_alive += 1;
 
-            if self.preys[i].grass_eaten >= 150.0 {
+            if self.preys[i].grass_eaten >= 250.0 {
                 let mut snake_near = false;
                 for s in &self.snakes {
                     if s.is_dead || s.body.is_empty() { continue; }
@@ -560,13 +580,26 @@ impl GameState {
             // Corpsefag eating corpses
             let cx = self.corpsefags[i].pos.0.round() as i32;
             let cy = self.corpsefags[i].pos.1.round() as i32;
-            if self.corpses.remove(&(cx, cy)) {
+            let mut eaten = false;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let tx = (cx + dx).rem_euclid(self.grid_width);
+                    let ty = (cy + dy).rem_euclid(self.grid_height);
+                    if self.corpses.remove(&(tx, ty)) {
+                        self.cf_eats.push((tx as f32, ty as f32));
+                        eaten = true;
+                    }
+                }
+            }
+            if eaten {
                 self.corpsefags[i].points += 1;
             }
 
             // Laying egg
-            if self.corpsefags[i].points >= 7 {
-                self.corpsefags[i].points -= 7;
+            if self.corpsefags[i].points >= 3 {
+                self.corpsefags[i].points -= 3;
+                let c_pos = self.corpsefags[i].pos;
+                self.cf_births.push(c_pos);
                 new_eggs.push(EggState {
                     pos: (cx, cy),
                     ticks_alive: 0,
@@ -578,12 +611,10 @@ impl GameState {
 
         // Anti-suicide steering: if the current direction runs the head into a
         // rock or a body, turn to a safe side instead of driving into it. Gated
-        // by `auto_steer` (not `is_training`) so it stays off whenever a model
-        // drives (training AND AI-mode play) — the policy never experiences this
-        // override during training, so exposing it only at play time produces
-        // out-of-distribution orbiting behavior around obstacles. It's on only
-        // for manual keyboard play, where it's a QoL assist.
-        if self.auto_steer {
+        // drives in training, so exposing it only at play time produces
+        // out-of-distribution orbiting behavior around obstacles, but the user requested it.
+        // It's on for both manual play and AI play.
+        if !self.is_training {
             for i in 0..self.snakes.len() {
                 if self.snakes[i].is_dead || self.snakes[i].body.is_empty() {
                     continue;
@@ -724,6 +755,7 @@ impl GameState {
                             self.snakes[i].score += 1;
                             self.snakes[i].steps_since_last_eat = 0;
                             self.eggs[e_idx].is_dead = true;
+                            self.egg_eats.push((self.eggs[e_idx].pos.0 as f32, self.eggs[e_idx].pos.1 as f32));
                             ate = true;
                             break;
                         }
@@ -775,6 +807,9 @@ impl GameState {
         let num_snakes = self.snakes.len();
         for i in 0..num_snakes {
             if self.snakes[i].body.len() >= 12 {
+                if let Some(&head) = self.snakes[i].body.get(0) {
+                    self.snake_births.push((head.0 as f32, head.1 as f32));
+                }
                 if self.is_training {
                     self.snakes[i].body.truncate(3);
                     self.snakes[i].mitosis_count += 1;
@@ -800,6 +835,15 @@ impl GameState {
             let mut all_cell_changed = vec![true; new_snakes.len()];
             self.snakes.extend(new_snakes);
             self.cell_changed.append(&mut all_cell_changed);
+        }
+
+        // Collect newly dead snakes for particles
+        for i in 0..was_dead_snakes.len() {
+            if self.snakes[i].is_dead && !was_dead_snakes[i] {
+                if let Some(&head) = self.snakes[i].body.get(0) {
+                    self.dead_snake_heads.push((head.0 as f32, head.1 as f32));
+                }
+            }
         }
     }
 
@@ -1272,7 +1316,7 @@ impl GameState {
             }
         }
 
-        obs[17] = (cf.points as f32 / 7.0).min(1.0);
+        obs[17] = (cf.points as f32 / 3.0).min(1.0);
         
         obs
     }

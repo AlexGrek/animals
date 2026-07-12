@@ -68,14 +68,10 @@ pub struct Apple {
 }
 
 #[derive(Component)]
-pub struct CorpsefagSprite {
-    pub idx: usize,
-}
+pub struct CorpsefagSprite;
 
 #[derive(Component)]
-pub struct EggSprite {
-    pub idx: usize,
-}
+pub struct EggSprite;
 
 #[derive(Component)]
 pub struct MapTile;

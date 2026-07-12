@@ -208,6 +208,18 @@ impl Simulation {
         
         let prev_cf_points: Vec<i32> = self.game_state.corpsefags.iter().map(|c| c.points).collect();
         
+        let mut prev_cf_max_rays = Vec::with_capacity(self.num_corpsefags);
+        for i in 0..self.num_corpsefags {
+            let obs = self.game_state.get_corpsefag_observation(i);
+            let mut max_ray = 0.0_f32;
+            for j in 9..17 {
+                if obs[j] > max_ray {
+                    max_ray = obs[j];
+                }
+            }
+            prev_cf_max_rays.push(max_ray);
+        }
+        
         self.game_state.step(1.0, &all_prey_actions, &corpsefag_actions);
 
         // ---- Snake rewards + terminal observations (captured while still dead) ----
@@ -391,11 +403,23 @@ impl Simulation {
             let done = cf.is_dead;
             let mut reward = 0.0;
             if done {
-                reward = -1.0;
+                reward = -5.0; // Punish dying slightly more
             } else {
-                if cf.points > prev_cf_points[i] {
-                    reward += 10.0;
+                let obs = self.game_state.get_corpsefag_observation(i);
+                let mut max_ray = 0.0_f32;
+                for j in 9..17 {
+                    if obs[j] > max_ray {
+                        max_ray = obs[j];
+                    }
                 }
+                
+                if cf.points > prev_cf_points[i] || (cf.points == 0 && prev_cf_points[i] == 2) {
+                    reward += 30.0; // Increased eat reward
+                } else {
+                    let delta = max_ray - prev_cf_max_rays[i];
+                    reward += 5.0 * delta.max(-1.0).min(1.0); // Shaping reward
+                }
+                
                 if let Some(&act) = corpsefag_actions.get(i) {
                     if act != 0 {
                         reward -= 0.01;
@@ -407,7 +431,7 @@ impl Simulation {
             cf_terminal_obs.push(if done {
                 self.game_state.get_corpsefag_observation(i).to_vec()
             } else {
-                vec![0.0; 13]
+                vec![0.0; 18]
             });
         }
         let mut cf_obs = Vec::with_capacity(self.num_corpsefags);

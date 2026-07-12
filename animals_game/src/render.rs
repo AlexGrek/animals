@@ -153,6 +153,167 @@ pub fn spawn_particles_for_dead_preys(
     }
 }
 
+pub fn spawn_particles_for_snake_deaths(
+    commands: &mut Commands,
+    state: &GameState,
+) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &head in &state.dead_snake_heads {
+        let origin = Vec3::new(
+            head.0 * TILE_SIZE - offset_x,
+            head.1 * TILE_SIZE - offset_y,
+            1.5,
+        );
+        for _ in 0..40 {
+            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+            let speed = rand::random::<f32>() * 200.0 + 100.0;
+            let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(0.8, 0.0, 0.0, 1.0), // Deep blood red
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.8, TILE_SIZE * 0.8)),
+                    ..default()
+                },
+                Transform::from_translation(origin),
+                Particle {
+                    velocity,
+                    lifetime: Timer::from_seconds(1.2, TimerMode::Once),
+                },
+            ));
+        }
+    }
+}
+
+pub fn spawn_particles_for_cf_births(
+    commands: &mut Commands,
+    state: &GameState,
+) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &pos in &state.cf_births {
+        let origin = Vec3::new(
+            pos.0 * TILE_SIZE - offset_x,
+            pos.1 * TILE_SIZE - offset_y,
+            1.5,
+        );
+        for _ in 0..20 {
+            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+            let speed = rand::random::<f32>() * 120.0 + 30.0;
+            let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(0.8, 1.0, 0.8, 0.9), // Pale green
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.5, TILE_SIZE * 0.5)),
+                    ..default()
+                },
+                Transform::from_translation(origin),
+                Particle {
+                    velocity,
+                    lifetime: Timer::from_seconds(1.0, TimerMode::Once),
+                },
+            ));
+        }
+    }
+}
+
+pub fn spawn_particles_for_snake_births(
+    commands: &mut Commands,
+    state: &GameState,
+) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &pos in &state.snake_births {
+        let origin = Vec3::new(
+            pos.0 * TILE_SIZE - offset_x,
+            pos.1 * TILE_SIZE - offset_y,
+            1.5,
+        );
+        let num_particles = 36;
+        for i in 0..num_particles {
+            let angle = (i as f32 / num_particles as f32) * std::f32::consts::TAU;
+            let speed = 150.0; // Constant speed for perfect circle
+            let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(1.0, 0.5, 0.0, 0.9), // Orange
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.6, TILE_SIZE * 0.6)),
+                    ..default()
+                },
+                Transform::from_translation(origin),
+                Particle {
+                    velocity,
+                    lifetime: Timer::from_seconds(0.8, TimerMode::Once),
+                },
+            ));
+        }
+    }
+}
+
+pub fn spawn_particles_for_cf_eats(
+    commands: &mut Commands,
+    state: &GameState,
+) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &pos in &state.cf_eats {
+        let origin = Vec3::new(
+            pos.0 * TILE_SIZE - offset_x,
+            pos.1 * TILE_SIZE - offset_y,
+            1.5,
+        );
+        for _ in 0..10 {
+            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+            let speed = rand::random::<f32>() * 80.0 + 20.0;
+            let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(0.2, 0.2, 0.2, 0.9), // Dark gray/black
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.4, TILE_SIZE * 0.4)),
+                    ..default()
+                },
+                Transform::from_translation(origin),
+                Particle {
+                    velocity,
+                    lifetime: Timer::from_seconds(0.6, TimerMode::Once),
+                },
+            ));
+        }
+    }
+}
+
+pub fn spawn_particles_for_egg_eats(
+    commands: &mut Commands,
+    state: &GameState,
+) {
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &pos in &state.egg_eats {
+        let origin = Vec3::new(
+            pos.0 * TILE_SIZE - offset_x,
+            pos.1 * TILE_SIZE - offset_y,
+            1.5,
+        );
+        for _ in 0..15 {
+            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+            let speed = rand::random::<f32>() * 100.0 + 30.0;
+            let velocity = Vec2::new(angle.cos() * speed, angle.sin() * speed);
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(1.0, 1.0, 0.6, 0.9), // Pale yellow/white
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.5, TILE_SIZE * 0.5)),
+                    ..default()
+                },
+                Transform::from_translation(origin),
+                Particle {
+                    velocity,
+                    lifetime: Timer::from_seconds(0.7, TimerMode::Once),
+                },
+            ));
+        }
+    }
+}
+
 pub fn update_particles(
     mut commands: Commands,
     time: Res<Time>,
@@ -249,7 +410,7 @@ pub fn render_sync(
         }
     }
 
-    for (c_idx, cf) in engine.0.corpsefags.iter().enumerate() {
+    for (_, cf) in engine.0.corpsefags.iter().enumerate() {
         if !cf.is_dead {
             let to = Vec3::new(
                 cf.pos.0 as f32 * TILE_SIZE - offset_x,
@@ -265,12 +426,12 @@ pub fn render_sync(
                     ..default()
                 },
                 Transform::from_translation(to),
-                CorpsefagSprite { idx: c_idx },
+                CorpsefagSprite,
             ));
         }
     }
 
-    for (e_idx, egg) in engine.0.eggs.iter().enumerate() {
+    for (_, egg) in engine.0.eggs.iter().enumerate() {
         if !egg.is_dead {
             let to = Vec3::new(
                 egg.pos.0 as f32 * TILE_SIZE - offset_x,
@@ -286,7 +447,7 @@ pub fn render_sync(
                     ..default()
                 },
                 Transform::from_translation(to),
-                EggSprite { idx: e_idx },
+                EggSprite,
             ));
         }
     }

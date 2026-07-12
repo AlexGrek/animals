@@ -38,6 +38,8 @@ class RustCorpsefagVecEnv(VecEnv):
         # Last snake observations (needed to predict their actions)
         self.last_snake_obs = np.zeros((self.total_snakes, SNAKE_OBS_SIZE), dtype=np.float32)
 
+        self.steps = 0
+
     def reset(self) -> np.ndarray:
         for i, game in enumerate(self.games):
             snake_data, _, _, cf_data = game.reset()
@@ -55,6 +57,11 @@ class RustCorpsefagVecEnv(VecEnv):
         # 1. Compute snake actions
         snake_actions = predict_actions(self.snake_model, self.last_snake_obs, SNAKE_NUM_ACTIONS)
 
+        self.steps += 1
+        if self.steps % 500 == 0:
+            for game in self.games:
+                game.spawn_corpses(25)
+
         # 2. Step all games
         for i, game in enumerate(self.games):
             start_s_idx = i * self.snakes_per_game
@@ -63,7 +70,7 @@ class RustCorpsefagVecEnv(VecEnv):
             start_p_idx = i * self.num_corpsefags
             c_actions = self.actions[start_p_idx:start_p_idx + self.num_corpsefags].tolist()
 
-            (snake_data, _, _, cf_data), *_ = game.step(s_actions, [], [], c_actions)
+            snake_data, _, _, cf_data = game.step(s_actions, [], [], c_actions)
             snake_obs, _, _, _ = snake_data
             cf_obs_list, cf_rew_list, cf_done_list, cf_terminal_list = cf_data
 

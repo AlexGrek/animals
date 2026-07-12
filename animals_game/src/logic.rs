@@ -5,7 +5,7 @@ use crossbeam_channel::TryRecvError;
 use crate::ai::queue_ai_inference;
 use crate::components::*;
 use crate::constants::*;
-use crate::render::{spawn_map, spawn_particles_for_dead_preys};
+use crate::render::{spawn_map, spawn_particles_for_dead_preys, spawn_particles_for_snake_deaths, spawn_particles_for_cf_births, spawn_particles_for_snake_births, spawn_particles_for_cf_eats, spawn_particles_for_egg_eats};
 use crate::resources::*;
 
 pub fn keyboard_input(
@@ -162,6 +162,11 @@ pub fn game_tick(
                     prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
                     engine.0.step(1.0, &prey_actions, &corpsefag_actions);
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
+                    spawn_particles_for_snake_deaths(&mut commands, &engine.0);
+                    spawn_particles_for_cf_births(&mut commands, &engine.0);
+                    spawn_particles_for_snake_births(&mut commands, &engine.0);
+                    spawn_particles_for_cf_eats(&mut commands, &engine.0);
+                    spawn_particles_for_egg_eats(&mut commands, &engine.0);
                     engine.0.respawn_dead_preys();
                     // Ecosystem model: a dead snake's entity is reaped (no
                     // respawn) but its body is left behind as a static corpse
@@ -188,6 +193,11 @@ pub fn game_tick(
             prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
             engine.0.step(1.0, &prey_actions, &cf_actions);
             spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
+            spawn_particles_for_snake_deaths(&mut commands, &engine.0);
+            spawn_particles_for_cf_births(&mut commands, &engine.0);
+            spawn_particles_for_snake_births(&mut commands, &engine.0);
+            spawn_particles_for_cf_eats(&mut commands, &engine.0);
+            spawn_particles_for_egg_eats(&mut commands, &engine.0);
             engine.0.respawn_dead_preys();
             // Same ecosystem model as AI mode: dead snakes become static corpses
             // and leave the active list (so the player's death still reduces the

@@ -23,7 +23,7 @@ pub const CORPSEFAG_OBS_SIZE: usize = 18;
 /// timing can be tuned without changing what a trained model reads as "close
 /// to starving" (an already-trained policy's hunger sense was calibrated
 /// against this value; changing it would require a retrain to stay correct).
-pub const HUNGER_LIMIT: u32 = 1200;
+pub const HUNGER_LIMIT: u32 = 600;
 /// Steps a snake can go without eating before it actually dies of hunger.
 /// Lower than `HUNGER_LIMIT` on purpose: this speeds up starvation in play
 /// without retraining, at the cost of a trained model never seeing the
