@@ -4,10 +4,11 @@
     "snake_model.zip",
     "snake_model.zip",
     "snake_model.zip",
+    "snake_model.zip",
     "snake_model.zip"
   ],
-  "num_preys": 28,
-  "num_amphibias": 28,
+  "num_preys": 11,
+  "num_amphibias": 11,
   "prey_model": "prey_model.zip",
   "amphibia_model": "amphibia_model.zip"
 }

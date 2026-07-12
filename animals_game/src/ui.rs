@@ -24,6 +24,47 @@ pub fn update_status_text(
     }
 }
 
+pub fn update_stats_text(
+    time: Res<Time>,
+    mut stats: ResMut<StatsTracker>,
+    engine: Res<GameEngine>,
+    mut query: Query<&mut Text, With<StatsText>>,
+) {
+    stats.frames += 1;
+    let now = time.elapsed_secs();
+    
+    if now - stats.last_fps_update >= 1.0 {
+        stats.client_fps = stats.frames as f32 / (now - stats.last_fps_update);
+        stats.frames = 0;
+        stats.last_fps_update = now;
+        
+        stats.inference_fps = stats.inference_steps as f32 / (now - stats.last_inference_update);
+        stats.inference_steps = 0;
+        stats.last_inference_update = now;
+    }
+
+    let mut alive_preys = 0;
+    for p in &engine.0.preys {
+        if !p.is_dead {
+            alive_preys += 1;
+        }
+    }
+    
+    let text = format!(
+        "Snakes: {} | Preys: {} | Client: {:.0} FPS | AI: {:.0} FPS",
+        engine.0.snakes.len(),
+        alive_preys,
+        stats.client_fps,
+        stats.inference_fps
+    );
+    
+    for mut t in &mut query {
+        if t.0 != text {
+            t.0 = text.clone();
+        }
+    }
+}
+
 pub fn toolbar_interaction(
     mut interaction_query: Query<
         (&Interaction, &ToolbarButton),

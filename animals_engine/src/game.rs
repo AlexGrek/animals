@@ -16,6 +16,7 @@ pub struct PreyState {
     pub death_by_reproduction: bool,
     pub just_revived: bool,
     pub grass_eaten: f32,
+    pub family_id: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -37,15 +38,15 @@ impl GameState {
 
         let mut preys = Vec::with_capacity(max_preys + max_amphibias);
         for i in 0..max_preys {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_preys, species: Species::Prey, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0 });
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_preys, species: Species::Prey, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
         }
         for i in 0..max_amphibias {
-            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_amphibias, species: Species::Amphibia, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0 });
+            preys.push(PreyState { pos: (0.0, 0.0), is_dead: i >= initial_amphibias, species: Species::Amphibia, lifespan: 0, steps_alive: 0, death_by_reproduction: false, just_revived: false, grass_eaten: 0.0, family_id: i as u32 });
         }
         let total_preys = max_preys + max_amphibias;
 
         let mut state = Self {
-            snakes: vec![SnakeState::new((0, 0), Direction::Up); num_snakes],
+            snakes: vec![SnakeState::new((0, 0), Direction::Up, 0); num_snakes],
             preys,
             grid_width: width,
             grid_height: height,
@@ -58,7 +59,7 @@ impl GameState {
 
         for i in 0..num_snakes {
             let (pos, direction) = state.spawn_position(i);
-            state.snakes[i] = SnakeState::new(pos, direction);
+            state.snakes[i] = SnakeState::new(pos, direction, i as u32);
         }
         for i in 0..total_preys {
             if !state.preys[i].is_dead {
@@ -162,7 +163,8 @@ impl GameState {
 
         for i in dead_indices {
             let (pos, direction) = self.spawn_position(i);
-            self.snakes[i] = SnakeState::new(pos, direction);
+            let family_id = self.snakes[i].family_id;
+            self.snakes[i] = SnakeState::new(pos, direction, family_id);
         }
         self.update_targets();
     }
@@ -259,13 +261,23 @@ impl GameState {
             }
         }
 
+        // Count currently alive before processing preys
+        let mut alive_preys = 0;
+        let mut alive_amphibias = 0;
+        for p in &self.preys {
+            if !p.is_dead {
+                if p.species == Species::Prey { alive_preys += 1; }
+                else { alive_amphibias += 1; }
+            }
+        }
+        
         // 1. Move preys
         for i in 0..self.preys.len() {
             if self.preys[i].is_dead { continue; }
             
             self.preys[i].steps_alive += 1;
             
-            if self.preys[i].grass_eaten >= 8.0 {
+            if self.preys[i].grass_eaten >= 150.0 {
                 let mut snake_near = false;
                 for s in &self.snakes {
                     if s.is_dead || s.body.is_empty() { continue; }
@@ -278,14 +290,21 @@ impl GameState {
                 }
                 
                 if !snake_near {
-                    self.preys[i].is_dead = true;
-                    self.preys[i].death_by_reproduction = true;
-                    self.prey_died_this_tick[i] = true;
-                    
-                    for _ in 0..3 {
-                        preys_to_revive.push((self.preys[i].species, self.preys[i].pos));
+                    let is_under_cap = if self.preys[i].species == Species::Prey {
+                        alive_preys < 200
+                    } else {
+                        alive_amphibias < 200
+                    };
+
+                    if is_under_cap {
+                        self.preys[i].grass_eaten = 0.0;
+                        preys_to_revive.push((self.preys[i].species, self.preys[i].pos, Some(self.preys[i].family_id)));
+                        if self.preys[i].species == Species::Prey {
+                            alive_preys += 1;
+                        } else {
+                            alive_amphibias += 1;
+                        }
                     }
-                    continue; // Skip movement, this prey is dead
                 }
             }
 
@@ -336,26 +355,50 @@ impl GameState {
             }
         }
 
-        // Process revived preys
-        let mut alive_preys = 0;
-        let mut alive_amphibias = 0;
-        for p in &self.preys {
-            if !p.is_dead {
-                if p.species == Species::Prey { alive_preys += 1; }
-                else { alive_amphibias += 1; }
-            }
-        }
-        
         if alive_preys < 5 {
-            preys_to_revive.push((Species::Prey, (-1.0, -1.0)));
+            preys_to_revive.push((Species::Prey, (-1.0, -1.0), None));
         }
         if alive_amphibias < 5 {
-            preys_to_revive.push((Species::Amphibia, (-1.0, -1.0)));
+            preys_to_revive.push((Species::Amphibia, (-1.0, -1.0), None));
         }
 
         let mut rng = rand::thread_rng();
-        for (species, pos) in preys_to_revive {
-            if let Some(idx) = self.preys.iter().position(|p| p.is_dead && p.species == species && !p.death_by_reproduction) {
+        for (species, pos, family_id_opt) in preys_to_revive {
+            if let Some(idx) = self.preys.iter().position(|p| p.is_dead && p.species == species) {
+                if pos.0 < 0.0 {
+                    self.spawn_prey(idx);
+                    self.preys[idx].family_id = family_id_opt.unwrap_or(idx as u32);
+                } else {
+                    let mut px = pos.0 + rng.gen_range(-1.0..=1.0);
+                    let mut py = pos.1 + rng.gen_range(-1.0..=1.0);
+                    px = px.rem_euclid(self.grid_width as f32);
+                    py = py.rem_euclid(self.grid_height as f32);
+                    self.preys[idx].pos = (px, py);
+                    self.preys[idx].is_dead = false;
+                    self.preys[idx].lifespan = rng.gen_range(200..=500);
+                    self.preys[idx].steps_alive = 0;
+                    self.preys[idx].just_revived = true;
+                    self.preys[idx].death_by_reproduction = false;
+                    self.preys[idx].grass_eaten = 0.0;
+                    self.preys[idx].family_id = family_id_opt.unwrap_or(idx as u32);
+                }
+            } else {
+                let family_id = family_id_opt.unwrap_or(self.preys.len() as u32);
+                let new_prey = PreyState {
+                    pos: (0.0, 0.0),
+                    is_dead: true,
+                    species,
+                    lifespan: 0,
+                    steps_alive: 0,
+                    death_by_reproduction: false,
+                    just_revived: false,
+                    grass_eaten: 0.0,
+                    family_id,
+                };
+                self.preys.push(new_prey);
+                let idx = self.preys.len() - 1;
+                self.prey_died_this_tick.push(false);
+                
                 if pos.0 < 0.0 {
                     self.spawn_prey(idx);
                 } else {
@@ -512,20 +555,24 @@ impl GameState {
         let mut new_snakes = Vec::new();
         let num_snakes = self.snakes.len();
         for i in 0..num_snakes {
-            if self.snakes[i].body.len() >= 9 {
+            if self.snakes[i].body.len() >= 12 {
                 if self.is_training {
                     self.snakes[i].body.truncate(3);
                     self.snakes[i].mitosis_count += 1;
                 } else {
                     let body2 = self.snakes[i].body[3..6].to_vec();
                     let body3 = self.snakes[i].body[6..9].to_vec();
+                    let body4 = self.snakes[i].body[9..12].to_vec();
                     self.snakes[i].body.truncate(3);
                     
                     let dir = self.snakes[i].direction;
-                    let s2 = SnakeState::new_with_body(body2, dir);
-                    let s3 = SnakeState::new_with_body(body3, dir);
+                    let family_id = self.snakes[i].family_id;
+                    let s2 = SnakeState::new_with_body(body2, dir, family_id);
+                    let s3 = SnakeState::new_with_body(body3, dir, family_id);
+                    let s4 = SnakeState::new_with_body(body4, dir, family_id);
                     new_snakes.push(s2);
                     new_snakes.push(s3);
+                    new_snakes.push(s4);
                 }
             }
         }

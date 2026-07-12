@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use animals_engine::{GameState, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
+use animals_engine::{GameState, Species, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
 use crate::resources::SelectedSnake;
 
 /// Colour used for a snake's head and its header line, so the two are visually
@@ -16,7 +16,14 @@ pub fn gather_observations(game: &GameState) -> Vec<f32> {
         obs.extend_from_slice(&game.get_relative_observation(s));
     }
     for p in 0..game.preys.len() {
-        obs.extend_from_slice(&game.get_prey_observation(p));
+        if game.preys[p].species == Species::Prey {
+            obs.extend_from_slice(&game.get_prey_observation(p));
+        }
+    }
+    for p in 0..game.preys.len() {
+        if game.preys[p].species == Species::Amphibia {
+            obs.extend_from_slice(&game.get_prey_observation(p));
+        }
     }
     obs
 }

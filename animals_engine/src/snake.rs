@@ -15,10 +15,11 @@ pub struct SnakeState {
     pub steps_since_last_eat: u32,
     pub tracked_target: Option<usize>,
     pub mitosis_count: u32,
+    pub family_id: u32,
 }
 
 impl SnakeState {
-    pub fn new(start_pos: (i32, i32), direction: Direction) -> Self {
+    pub fn new(start_pos: (i32, i32), direction: Direction, family_id: u32) -> Self {
         let v = direction.to_vector();
         let head = start_pos;
         let body = vec![
@@ -40,10 +41,11 @@ impl SnakeState {
             steps_since_last_eat: 0,
             tracked_target: None,
             mitosis_count: 0,
+            family_id,
         }
     }
 
-    pub fn new_with_body(body: Vec<(i32, i32)>, direction: Direction) -> Self {
+    pub fn new_with_body(body: Vec<(i32, i32)>, direction: Direction, family_id: u32) -> Self {
         Self {
             head_pos: (body[0].0 as f32, body[0].1 as f32),
             body,
@@ -58,6 +60,7 @@ impl SnakeState {
             steps_since_last_eat: 0,
             tracked_target: None,
             mitosis_count: 0,
+            family_id,
         }
     }
 }

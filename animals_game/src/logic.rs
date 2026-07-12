@@ -85,8 +85,9 @@ pub fn game_tick(
     selected: Res<SelectedSnake>,
     mut act_buffer: ResMut<ActivationBuffer>,
     speed: Res<GameSpeed>,
+    mut stats: ResMut<StatsTracker>,
 ) {
-    if !matches!(*status, AppStatus::Running) {
+    if matches!(*status, AppStatus::Loading(_) | AppStatus::Failed(_)) {
         return;
     }
 
@@ -135,6 +136,7 @@ pub fn game_tick(
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
                     engine.0.respawn_dead_preys();
                     worker.awaiting = false;
+                    stats.inference_steps += 1;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {

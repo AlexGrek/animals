@@ -97,6 +97,12 @@ pub fn in_game_setup(
                 TextColor(Color::srgb(0.9, 0.9, 0.2)),
                 StatusText,
             ));
+            parent.spawn((
+                Text::new(""),
+                TextFont { font_size: 14.0, ..default() },
+                TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                StatsText,
+            ));
         });
 
     commands
@@ -198,6 +204,8 @@ pub fn in_game_setup(
         .with_children(|parent| {
             let speeds = [
                 ("||", 0.0),
+                ("0.1x", 0.1),
+                ("0.25x", 0.25),
                 ("0.5x", 0.5),
                 ("1x", 1.0),
                 ("2x", 2.0),

@@ -58,6 +58,30 @@ pub struct PrevPositions {
     pub prey_pos: Vec<(f32, f32)>,
 }
 
+#[derive(Resource)]
+pub struct StatsTracker {
+    pub frames: u32,
+    pub last_fps_update: f32,
+    pub client_fps: f32,
+    
+    pub inference_steps: u32,
+    pub last_inference_update: f32,
+    pub inference_fps: f32,
+}
+
+impl Default for StatsTracker {
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            last_fps_update: 0.0,
+            client_fps: 0.0,
+            inference_steps: 0,
+            last_inference_update: 0.0,
+            inference_fps: 0.0,
+        }
+    }
+}
+
 /// Set whenever the game state changes so `render_sync` only rebuilds sprites
 /// on ticks that actually moved the game, instead of every frame.
 #[derive(Resource)]
@@ -107,7 +131,7 @@ pub struct WorkerReply {
 }
 
 pub struct AiWorkerHandle {
-    pub obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize, i32)>,
+    pub obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>)>,
     pub act_rx: crossbeam_channel::Receiver<WorkerReply>,
     pub awaiting: bool,
 }

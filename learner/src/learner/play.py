@@ -238,14 +238,19 @@ def main():
                         break
                     num_snakes, num_preys, num_amphibias, selected = struct.unpack('<4i', header)
 
-                    bytes_expected = (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
+                    bytes_expected = (num_snakes + num_preys + num_amphibias) * 4 + (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
                     floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
 
                     data = recvall(conn, bytes_expected)
                     if not data:
                         break
 
-                    unpacked = struct.unpack(f'<{floats_expected}f', data)
+                    family_ids = struct.unpack(f'<{num_snakes}i', data[:num_snakes * 4])
+                    prey_family_ids = struct.unpack(f'<{num_preys}i', data[num_snakes * 4:(num_snakes + num_preys) * 4])
+                    amphibia_family_ids = struct.unpack(f'<{num_amphibias}i', data[(num_snakes + num_preys) * 4:(num_snakes + num_preys + num_amphibias) * 4])
+                    obs_data = data[(num_snakes + num_preys + num_amphibias) * 4:]
+
+                    unpacked = struct.unpack(f'<{floats_expected}f', obs_data)
                     snake_obs = np.array(unpacked[:num_snakes * SNAKE_OBS_SIZE], dtype=np.float32).reshape(num_snakes, SNAKE_OBS_SIZE)
 
                     prey_start = num_snakes * SNAKE_OBS_SIZE
@@ -259,7 +264,7 @@ def main():
                     # instead of one forward pass per agent.
                     snake_action_map = {}
                     for path in loaded_models:
-                        idxs = [i for i in range(num_snakes) if model_paths[i % len(model_paths)] == path]
+                        idxs = [i for i in range(num_snakes) if model_paths[family_ids[i] % len(model_paths)] == path]
                         if idxs:
                             acts, _ = loaded_models[path].predict(snake_obs[idxs], deterministic=True)
                             for i, a in zip(idxs, acts):
@@ -269,7 +274,7 @@ def main():
                     prey_action_map = {i: 0 for i in range(num_preys)}
                     if prey_model_paths:
                         for path in set(prey_model_paths):
-                            idxs = [i for i in range(num_preys) if prey_model_paths[i % len(prey_model_paths)] == path]
+                            idxs = [i for i in range(num_preys) if prey_model_paths[prey_family_ids[i] % len(prey_model_paths)] == path]
                             if idxs:
                                 acts, _ = loaded_prey_models[path].predict(prey_obs[idxs], deterministic=True)
                                 for i, a in zip(idxs, acts):
@@ -279,7 +284,7 @@ def main():
                     amphibia_action_map = {i: 0 for i in range(num_amphibias)}
                     if amphibia_model_paths:
                         for path in set(amphibia_model_paths):
-                            idxs = [i for i in range(num_amphibias) if amphibia_model_paths[i % len(amphibia_model_paths)] == path]
+                            idxs = [i for i in range(num_amphibias) if amphibia_model_paths[amphibia_family_ids[i] % len(amphibia_model_paths)] == path]
                             if idxs:
                                 acts, _ = loaded_amphibia_models[path].predict(amphibia_obs[idxs], deterministic=True)
                                 for i, a in zip(idxs, acts):
@@ -291,7 +296,7 @@ def main():
                     # and append them length-prefixed to the response.
                     sel_blob = np.empty(0, dtype=np.float32)
                     if 0 <= selected < num_snakes:
-                        sel_path = model_paths[selected]
+                        sel_path = model_paths[family_ids[selected] % len(model_paths)]
                         sel_model = loaded_models[sel_path]
                         sel_model.predict(snake_obs[selected:selected + 1], deterministic=True)
                         sel_blob = activation_blob(snake_stores[sel_path])

@@ -10,19 +10,33 @@ use crate::utils::{gather_observations, selected_i32};
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
 pub fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
-    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, i32)>();
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>)>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<WorkerReply>();
 
     std::thread::spawn(move || {
-        while let Ok((obs, num_snakes, num_preys, num_amphibias, selected)) = obs_rx.recv() {
-            let mut payload = vec![0u8; 16 + obs.len() * 4];
+        while let Ok((obs, num_snakes, num_preys, num_amphibias, selected, family_ids, prey_family_ids, amphibia_family_ids)) = obs_rx.recv() {
+            let mut payload = vec![0u8; 16 + (num_snakes + num_preys + num_amphibias) * 4 + obs.len() * 4];
             payload[0..4].copy_from_slice(&(num_snakes as i32).to_le_bytes());
             payload[4..8].copy_from_slice(&(num_preys as i32).to_le_bytes());
             payload[8..12].copy_from_slice(&(num_amphibias as i32).to_le_bytes());
             payload[12..16].copy_from_slice(&selected.to_le_bytes());
 
+            let mut offset = 16;
+            for s in 0..num_snakes {
+                payload[offset..offset + 4].copy_from_slice(&(family_ids[s] as i32).to_le_bytes());
+                offset += 4;
+            }
+            for p in 0..num_preys {
+                payload[offset..offset + 4].copy_from_slice(&(prey_family_ids[p] as i32).to_le_bytes());
+                offset += 4;
+            }
+            for a in 0..num_amphibias {
+                payload[offset..offset + 4].copy_from_slice(&(amphibia_family_ids[a] as i32).to_le_bytes());
+                offset += 4;
+            }
+
             for (i, &val) in obs.iter().enumerate() {
-                payload[16 + i * 4..16 + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+                payload[offset + i * 4..offset + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
             }
             if stream.write_all(&payload).is_err() {
                 break;
@@ -204,7 +218,10 @@ pub fn queue_ai_inference(engine: &GameState, worker: &mut AiWorkerHandle, selec
     let num_amphibias = engine.preys.iter().filter(|p| p.species == Species::Amphibia).count();
     let num_preys = engine.preys.len() - num_amphibias;
     let sel = selected_i32(selected, num_snakes);
-    if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, sel)).is_err() {
+    let family_ids: Vec<u32> = engine.snakes.iter().map(|s| s.family_id).collect();
+    let prey_family_ids: Vec<u32> = engine.preys.iter().filter(|p| p.species == Species::Prey).map(|p| p.family_id).collect();
+    let amphibia_family_ids: Vec<u32> = engine.preys.iter().filter(|p| p.species == Species::Amphibia).map(|p| p.family_id).collect();
+    if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, sel, family_ids, prey_family_ids, amphibia_family_ids)).is_err() {
         eprintln!("AI worker thread stopped");
         std::process::exit(1);
     }

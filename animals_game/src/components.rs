@@ -5,6 +5,9 @@ use bevy::prelude::*;
 pub struct StatusText;
 
 #[derive(Component)]
+pub struct StatsText;
+
+#[derive(Component)]
 pub struct SnakeSegment;
 
 #[derive(Component)]

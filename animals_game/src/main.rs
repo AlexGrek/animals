@@ -17,7 +17,7 @@ use animals_engine::GameState;
 use constants::{GRID_WIDTH, GRID_HEIGHT};
 use resources::{
     GameEngine, TickTimer, AppStatus, RenderDirty, PrevPositions, GameSpeed, 
-    OverlaySettings, SelectedSnake, ActivationBuffer, AiWorker, AppState, MatchConfig
+    OverlaySettings, SelectedSnake, ActivationBuffer, AiWorker, AppState, MatchConfig, StatsTracker
 };
 
 fn main() {
@@ -66,6 +66,7 @@ fn main() {
         .insert_resource(OverlaySettings::default())
         .insert_resource(SelectedSnake::default())
         .insert_resource(ActivationBuffer::default())
+        .insert_resource(StatsTracker::default())
         .add_plugins(menu::MenuPlugin)
         .add_systems(Startup, setup::setup_camera)
         .add_systems(OnEnter(AppState::InGame), setup::in_game_setup)
@@ -77,6 +78,7 @@ fn main() {
                 ai::poll_ai_connection,
                 logic::game_tick,
                 ui::update_status_text,
+                ui::update_stats_text,
                 render::render_sync,
                 render::update_map,
                 render::apply_interpolation,
