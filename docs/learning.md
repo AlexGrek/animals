@@ -4,18 +4,19 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
 
 ## Observation Space
 
-### Snake (`SNAKE_OBS_SIZE = 133` floats, `animals_engine/src/game.rs::get_relative_observation`)
+### Snake (`SNAKE_OBS_SIZE = 197` floats, `animals_engine/src/game.rs::get_relative_observation`)
 - `[0..64)` — 8x8 grid in the snake's own rotated frame (4 cells ahead, 3 behind, 4 right, 3 left of the head):
   - **1.0**: Prey (either species)
   - **-1.0**: Wall / rock / own body
   - **-0.8**: Enemy snake head (the part that kills on collision or head-to-head)
   - **-0.5**: Enemy snake body
   - otherwise **`Species::Snake.speed_on(terrain) * 0.5`** (passable terrain, weighted by how fast a snake moves there)
-- `[64]`/`[65]` — **unit** direction to the nearest prey the snake can *smell* (forward/right components in the snake's frame); zero if nothing is smelled. A snake only smells prey within `SMELL_RANGE = 30` torus-wrapped Manhattan cells of its head (`GameState::update_targets`) — it has no knowledge of prey farther away, however close it may appear on an absolute map view. A unit vector keeps the heading signal equally strong at any range within that radius, unlike the old `dx / max_dim` encoding which shrank to ~0.01 for a prey a few cells away.
+- `[64]`/`[65]` — **unit** direction to the nearest prey the snake can *smell* (forward/right components in the snake's frame); zero if nothing is smelled. A snake only smells prey within `SMELL_RANGE = 60` torus-wrapped Manhattan cells of its head (`GameState::update_targets`) — it has no knowledge of prey farther away, however close it may appear on an absolute map view. A unit vector keeps the heading signal equally strong at any range within that radius, unlike the old `dx / max_dim` encoding which shrank to ~0.01 for a prey a few cells away.
 - `[66]` — distance to that prey, normalized by `SMELL_RANGE` (`1.0` if nothing is smelled).
 - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT` (see below).
 - `[68]` — own length `/ 100`, capped at 1.
 - `[69..133)` — 8x8 grass-health grid over the *same* rotated cells as `[0..64)`: `grass_health` in `[0, 1]` per cell (1.0 = full grass, 0.0 = grazed bare / non-grass). Lets the snake read where prey have recently fed and head toward likely prey.
+- `[133..197)` — 8x8 **coarse visitation-recency grid**, same rotated frame/cell order as `[0..64)` but each cell spans an 8x8-tile block (a 2x2 group of the 4x4-tile coarse patches the engine tracks per snake in `SnakeState::visited`). Value is `1.0` for a patch entered this tick, decaying linearly to `0.0` over `VISIT_HORIZON = 1500` ticks (or if never visited) — the freshest (max) recency among the patches the cell covers. This exists so the exploration reward below (which depends on visitation history) is actually observable by a memoryless feedforward policy — previously the reward signal referenced state the network couldn't see, so the best it could learn was a biased random walk that circled under `deterministic=True` inference. See `GridCnnExtractor` below for how this is fed to the network.
 
 ### Prey / Amphibia (`PREY_OBS_SIZE = 131` floats, `animals_engine/src/game.rs::get_prey_observation`, shared by both species)
 - `[0..64)` — 8x8 grid in the absolute frame (up is always north):
@@ -39,7 +40,8 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 - Otherwise (no kill/eat this tick):
   - **Smell shaping**: `0.15 * clamp(prev_dist_to_smelled_prey - curr_dist, -2.0, 2.0)`, gated to prey within `SMELL_RANGE` torus-wrapped Manhattan cells (`min_dist_to_smelled_prey` in `animals_simulation/src/lib.rs`). If either side of the delta has nothing in smell range (prey just entered/left range, or none exists), no shaping is applied that tick — the reward never leaks information the policy can't observe. The distance itself is torus-wrapped, unlike the pre-existing (buggy) unwrapped version.
   - **Hunger penalty**: `-0.01 * steps_since_last_eat / (HUNGER_LIMIT / 4)`.
-  - **Exploration bonus**: `+0.05` for entering a not-yet-visited 4×4-coarse grid cell, applied **only when nothing is currently smelled** (smell → pursue via shaping; no smell → explore). Visited-cell state is per-snake, held in the PyO3 `Simulation` struct (not the engine), and is cleared whenever the snake dies or eats — it only tracks "new ground since the last meal, this life."
+  - **Exploration bonus**: `+0.1` for entering a coarse (4×4-tile) grid cell not visited within the last `VISIT_HORIZON` ticks, `-0.05` otherwise, applied **only when nothing is currently smelled** (smell → pursue via shaping; no smell → explore). Driven by `SnakeState::entered_new_patch`, computed once per tick in `GameState::step` (`animals_engine/src/game.rs`) from a per-snake `visited: HashMap<(i32,i32), u64>` (coarse cell → last-visit tick) — moved into the engine (it used to live in the PyO3 `Simulation` struct as a `Vec<HashSet>`) specifically so the same visitation history can also be exposed to the network as the `[133..197)` observation channel above; a reward term the policy can't see is unlearnable. Recency naturally decays via `VISIT_HORIZON` rather than being hard-cleared on death/eat — death already resets it (a fresh `SnakeState`), and a decaying signal is more informative than an eat-triggered wipe.
+  - **Turn cost**: `-0.002` per tick the action isn't "straight" (actions 1/2). Tiny relative to the explore bonus; exists only to break a memoryless policy's indifference between turning and going straight when neither is otherwise reinforced, without meaningfully deterring pursuit turns (whose shaping/kill rewards dwarf it).
 
 ### Prey / Amphibia
 - **Death** (eaten this tick): `-10.0`.
@@ -93,6 +95,14 @@ features, and concatenates the raw scalar features (smell/threat direction+dista
 length). The grid/scalar index slices live in `learner/src/learner/constants.py`
 (`SNAKE_GRID1/2`, `PREY_GRID1/2`) and mirror the write order in `animals_engine/src/game.rs`.
 
+The snake observation carries a **third grid** (`SNAKE_GRID3`, `[133..197)`): the coarse
+visitation-recency grid described above. It's at a different spatial scale than grid1/grid2 (8
+tiles/cell vs 1 tile/cell), so stacking it as a third channel of the same image would spatially
+misalign it — instead `GridCnnExtractor` accepts an optional `grid3` kwarg and runs it through
+its own small conv branch (1→8→16 channels), concatenating its flattened output with the
+fine-grid branch's before the final linear projection to 128 features. Prey/amphibia models
+don't pass `grid3` (their observation is unchanged) and get the original two-grid path.
+
 On top of that extractor:
 - **Snake**: MLP `pi=[256, 256]`, `vf=[256, 256]`.
 - **Prey / Amphibia**: MLP `pi=[128, 128]`, `vf=[128, 128]` — simpler action space (5 discrete
@@ -108,3 +118,29 @@ We instead use:
 - Prey / Amphibia: `batch_size=2048`, `ent_coef=0.02` — lower than the snake's exploration needs less encouragement now that the reward includes dense threat-distance shaping rather than only sparse survive/death. Prey now uses `n_steps=128` paired with a small-pool env config (~160 envs total: 16 games x 10 max preys) for roughly 24 PPO updates per 500k training steps; amphibia is unchanged at `n_steps=512` until its own retrain.
 
 Changing any observation size invalidates saved checkpoints in `learner/models/` (SB3 `.load()` fails on shape mismatch) — retrain or delete them. See `CLAUDE.md` for the full list of files that must stay in sync.
+
+## Train/Play Parity
+
+Training rolls out actions stochastically (PPO sampling; frozen opponents via
+`model_utils.predict_actions`, which also samples by default). `play.py` (the Bevy inference
+server) and `test.py` (headless eval) default to the same stochastic sampling now — pass
+`--deterministic` to either to switch to argmax instead. This matters because a 3-action turn
+policy with even a mild logit bias toward one turn looks fine under sampling (noise breaks the
+bias) but locks into a perfect circle under argmax; watching/evaluating with the training-time
+sampling distribution avoids exposing that artifact as if it were a real behavior bug.
+
+Two more places the Bevy game previously diverged from the training simulation, both fixed:
+- **Anti-suicide steering** (`GameState.auto_steer`, gates the force-turn-away-from-obstacles
+  logic in `game.rs::step`): now off whenever a model drives (training and AI-mode play alike),
+  on only for manual keyboard play. It used to be tied to `is_training` instead, so a policy
+  would encounter a steering override in the game it never experienced in training — visually
+  indistinguishable from the policy itself circling around an obstacle.
+- **Corpse persistence**: the AI branch of `animals_game`'s `game_tick` now calls
+  `engine.0.respawn_dead()` (matching `animals_simulation`'s per-tick respawn), instead of
+  leaving dead snakes as permanent `-0.5` obstacles the policy never trained against.
+
+`test.py` also reports circling-diagnostic stats per snake (`action_distribution`, `turn_bias`,
+`longest_turn_run`, `unique_patches_per_life`, `unique_patches_per_100_ticks`,
+`mean_displacement_per_100_ticks`) — run it with both `--deterministic` and without, and at low
+vs. high prey counts, to check whether a given fix actually reduced circling rather than just
+looking better anecdotally in the Bevy viewer.

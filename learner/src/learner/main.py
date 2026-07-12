@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from learner.environment import RustMultiSnakeVecEnv, MultiProcRustVecEnv
 from learner.policy import GridCnnExtractor
-from learner.constants import SNAKE_GRID1, SNAKE_GRID2
+from learner.constants import SNAKE_GRID1, SNAKE_GRID2, SNAKE_GRID3
 from stable_baselines3 import PPO
 
 def main():
@@ -127,7 +127,7 @@ def main():
                 env,
                 policy_kwargs=dict(
                     features_extractor_class=GridCnnExtractor,
-                    features_extractor_kwargs=dict(grid1=SNAKE_GRID1, grid2=SNAKE_GRID2),
+                    features_extractor_kwargs=dict(grid1=SNAKE_GRID1, grid2=SNAKE_GRID2, grid3=SNAKE_GRID3),
                     net_arch=dict(pi=[256, 256], vf=[256, 256]),
                 ),
                 verbose=1,

@@ -25,8 +25,8 @@ fn main() {
     let is_ai = args.iter().any(|arg| arg == "--ai");
     let initial_state = if is_ai { AppState::Menu } else { AppState::InGame };
 
-    let num_preys = 1;
-    let num_amphibias = 0;
+    let num_preys = 24;
+    let num_amphibias = 8;
 
     let match_config = MatchConfig {
         is_ai,
@@ -56,7 +56,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.09, 0.10, 0.14)))
         .insert_resource(match_config)
         .insert_state(initial_state)
-        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, 2, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false)))
+        .insert_resource(GameEngine(GameState::new(GRID_WIDTH, GRID_HEIGHT, 2, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false, !is_ai)))
         .insert_resource(TickTimer(Timer::from_seconds(0.033, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))

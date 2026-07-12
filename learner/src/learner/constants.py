@@ -6,8 +6,9 @@ checkpoints in `learner/models/` (SB3 load fails on shape mismatch).
 """
 
 # 8x8 grid (64) + smelled-prey unit-direction (2) + normalized distance (1)
-# + hunger (1) + own length (1) + grass health grid (64).
-SNAKE_OBS_SIZE = 133
+# + hunger (1) + own length (1) + grass health grid (64)
+# + 8x8 coarse visitation-recency grid (64).
+SNAKE_OBS_SIZE = 197
 
 # 8x8 grid (64) + nearest-snake-head unit-direction (2) + normalized distance (1) + grass health grid (64).
 # Shared by Prey and Amphibia (terrain values are species-relative).
@@ -34,9 +35,13 @@ GRID_W = 8
 GRID_CELLS = GRID_H * GRID_W  # 64
 
 # Snake: terrain/entity grid [0:64), scalars [64:69) (smell dir/dist, hunger,
-# length), grass-health grid [69:133).
+# length), grass-health grid [69:133), coarse visitation-recency grid [133:197).
+# Pinned explicitly (not derived from SNAKE_OBS_SIZE) since the visitation
+# grid was appended after grass-health, so "last GRID_CELLS floats" no longer
+# identifies a single slice.
 SNAKE_GRID1 = (0, GRID_CELLS)
-SNAKE_GRID2 = (SNAKE_OBS_SIZE - GRID_CELLS, SNAKE_OBS_SIZE)  # (69, 133)
+SNAKE_GRID2 = (69, 133)
+SNAKE_GRID3 = (133, 197)
 
 # Prey/Amphibia: terrain grid [0:64), scalars [64:67) (snake dir/dist),
 # grass-health grid [67:131).

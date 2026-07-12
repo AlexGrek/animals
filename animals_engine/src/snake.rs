@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::direction::Direction;
 
 #[derive(Clone, Debug)]
@@ -16,6 +17,14 @@ pub struct SnakeState {
     pub tracked_target: Option<usize>,
     pub mitosis_count: u32,
     pub family_id: u32,
+    /// Coarse (4x4-tile) cell -> the `GameState::steps` tick it was last
+    /// entered. Drives both the exploration reward and the visitation
+    /// observation channel; cleared on respawn (fresh `SnakeState`).
+    pub visited: HashMap<(i32, i32), u64>,
+    /// Set in `GameState::step` for the tick just simulated: whether the
+    /// snake entered a coarse cell it hasn't visited recently (see
+    /// `VISIT_HORIZON`).
+    pub entered_new_patch: bool,
 }
 
 impl SnakeState {
@@ -42,6 +51,8 @@ impl SnakeState {
             tracked_target: None,
             mitosis_count: 0,
             family_id,
+            visited: HashMap::new(),
+            entered_new_patch: false,
         }
     }
 
@@ -61,6 +72,8 @@ impl SnakeState {
             tracked_target: None,
             mitosis_count: 0,
             family_id,
+            visited: HashMap::new(),
+            entered_new_patch: false,
         }
     }
 }

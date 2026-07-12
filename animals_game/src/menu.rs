@@ -33,8 +33,12 @@ impl Default for MenuData {
         Self {
             available_models: vec!["None".to_string()],
             snake_models: vec![0, 0],
-            num_preys: 1,
-            num_amphibias: 0,
+            // Default closer to the training density (32 preys / 16 amphibias on
+            // the same 400x400 map) so casual AI matches don't sit almost
+            // permanently in the "no smell" exploration regime, which is
+            // out-of-distribution and encourages circling. Still adjustable in menu.
+            num_preys: 24,
+            num_amphibias: 8,
             prey_model: 0,
             amphibia_model: 0,
         }

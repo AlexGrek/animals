@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--amphibias", type=int, default=0, help="Number of amphibias in the simulation")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum number of steps before forced termination")
     parser.add_argument("--output", type=str, default="test_results.json", help="Path to dump JSON results")
+    parser.add_argument("--deterministic", action="store_true",
+                         help="Use argmax actions instead of sampling (matches play.py's default inference mode)")
     args, unknown = parser.parse_known_args()
 
     num_snakes = args.snakes
@@ -115,7 +117,7 @@ def main():
         amphibia_models = [None] * num_amphibias
 
     logger.info(f"Initializing simulation with {num_snakes} snakes, {num_preys} preys, and {num_amphibias} amphibias...")
-    sim = animals_simulation.Simulation(num_snakes, num_preys, num_amphibias)
+    sim = animals_simulation.Simulation(num_snakes, num_preys, num_preys, num_amphibias, num_amphibias)
     obs_list = sim.reset()
 
     total_apples = [0] * num_snakes
@@ -128,7 +130,7 @@ def main():
     amphibia_deaths = [0] * num_amphibias
     amphibia_ticks_survived = [0] * num_amphibias
 
-    def batched_predict(models_list, obs_arr, deterministic=True):
+    def batched_predict(models_list, obs_arr, deterministic=args.deterministic):
         """Batch each unique model's predictions in one call instead of one
         forward pass per agent."""
         n = obs_arr.shape[0]
@@ -139,6 +141,30 @@ def main():
             for i, a in zip(idxs, acts):
                 result[i] = int(a)
         return result
+
+    # --- Circling diagnostics -------------------------------------------------
+    # Grid is 400x400 everywhere (animals_simulation::Simulation::new / GRID_WIDTH
+    # /GRID_HEIGHT in animals_game); torus-wrapped like the engine's torus_delta.
+    GRID_WIDTH = GRID_HEIGHT = 400
+
+    def torus_delta(from_xy, to_xy):
+        dx = to_xy[0] - from_xy[0]
+        dy = to_xy[1] - from_xy[1]
+        if dx > GRID_WIDTH / 2: dx -= GRID_WIDTH
+        elif dx < -GRID_WIDTH / 2: dx += GRID_WIDTH
+        if dy > GRID_HEIGHT / 2: dy -= GRID_HEIGHT
+        elif dy < -GRID_HEIGHT / 2: dy += GRID_HEIGHT
+        return dx, dy
+
+    action_counts = [[0, 0, 0] for _ in range(num_snakes)]  # straight, right, left
+    longest_turn_run = [0] * num_snakes
+    cur_turn_run = [0] * num_snakes
+    cur_turn_action = [None] * num_snakes
+    life_patches = [set() for _ in range(num_snakes)]  # unique 4x4 patches visited this life
+    life_patch_counts = [[] for _ in range(num_snakes)]  # completed lives' patch counts
+    all_patches = [set() for _ in range(num_snakes)]  # unique patches across the whole run
+    displacement_samples = [[] for _ in range(num_snakes)]  # torus displacement over 100-tick windows
+    head_at_window_start = [None] * num_snakes
 
     logger.info("Running simulation loop...")
     steps = 0
@@ -158,12 +184,42 @@ def main():
          _, _) = sim.step(actions, prey_actions, amphibia_actions)
         steps += 1
 
+        stats_now = sim.get_stats()
+        for i in range(num_snakes):
+            action_counts[i][actions[i]] += 1
+            if actions[i] == 0:
+                cur_turn_run[i] = 0
+                cur_turn_action[i] = None
+            else:
+                if actions[i] == cur_turn_action[i]:
+                    cur_turn_run[i] += 1
+                else:
+                    cur_turn_action[i] = actions[i]
+                    cur_turn_run[i] = 1
+                longest_turn_run[i] = max(longest_turn_run[i], cur_turn_run[i])
+
+            head = (stats_now[i]["head_x"], stats_now[i]["head_y"])
+            if head_at_window_start[i] is None:
+                head_at_window_start[i] = head
+            if steps % 100 == 0:
+                dx, dy = torus_delta(head_at_window_start[i], head)
+                displacement_samples[i].append((dx * dx + dy * dy) ** 0.5)
+                head_at_window_start[i] = head
+
+            if dones[i]:
+                life_patch_counts[i].append(len(life_patches[i]))
+                life_patches[i] = set()
+            else:
+                patch = (head[0] // 4, head[1] // 4)
+                life_patches[i].add(patch)
+                all_patches[i].add(patch)
+
         for p_idx in range(num_preys):
             if prey_dones[p_idx]:
                 prey_deaths[p_idx] += 1
             else:
                 prey_ticks_survived[p_idx] += 1
-                
+
         for a_idx in range(num_amphibias):
             if amphibia_dones[a_idx]:
                 amphibia_deaths[a_idx] += 1
@@ -186,6 +242,25 @@ def main():
         stat["total_apples_eaten"] = total_apples[i]
         stat["total_kills"] = total_kills_events[i]
         stat["total_deaths"] = total_deaths[i]
+
+        # Circling diagnostics (see docs/learning.md "Validation protocol").
+        straight, right, left = action_counts[i]
+        total_actions = straight + right + left
+        turns = right + left
+        stat["action_distribution"] = {
+            "straight": straight / total_actions if total_actions else 0.0,
+            "right": right / total_actions if total_actions else 0.0,
+            "left": left / total_actions if total_actions else 0.0,
+        }
+        stat["turn_bias"] = abs(right - left) / turns if turns else 0.0
+        stat["longest_turn_run"] = longest_turn_run[i]
+        completed_lives = life_patch_counts[i]
+        stat["unique_patches_per_life"] = (sum(completed_lives) / len(completed_lives)) if completed_lives else None
+        stat["unique_patches_total"] = len(all_patches[i])
+        stat["unique_patches_per_100_ticks"] = len(all_patches[i]) / (steps / 100) if steps else 0.0
+        stat["mean_displacement_per_100_ticks"] = (
+            sum(displacement_samples[i]) / len(displacement_samples[i]) if displacement_samples[i] else 0.0
+        )
 
     # Add prey stats to output
     prey_stats = []

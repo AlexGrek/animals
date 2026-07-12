@@ -51,7 +51,8 @@ pub fn keyboard_input(
         let num_snakes = engine.0.snakes.len();
         let num_preys = config.num_preys;
         let num_amphibias = config.num_amphibias;
-        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false);
+        let is_ai = config.is_ai;
+        engine.0 = GameState::new(GRID_WIDTH, GRID_HEIGHT, num_snakes, num_preys, num_preys.max(100), num_amphibias, num_amphibias.max(100), false, !is_ai);
 
         for entity in map_query.iter() {
             commands.entity(entity).despawn();
@@ -59,7 +60,6 @@ pub fn keyboard_input(
         spawn_map(&mut commands, &engine.0, &mut images);
         dirty.0 = true;
 
-        let is_ai = config.is_ai;
         let needs_ai_respawn =
             is_ai && (ai_server.is_none() || matches!(*status, AppStatus::Failed(_)));
 
@@ -134,6 +134,11 @@ pub fn game_tick(
                     prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
                     engine.0.step(1.0, &prey_actions);
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
+                    // AI-driven snakes are respawned in place (matching the training
+                    // simulation) rather than left as permanent corpses, so the game
+                    // doesn't drift into the out-of-distribution "static obstacle"
+                    // state the policy never trained against.
+                    engine.0.respawn_dead();
                     engine.0.respawn_dead_preys();
                     worker.awaiting = false;
                     stats.inference_steps += 1;

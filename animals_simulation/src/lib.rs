@@ -1,7 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::collections::HashSet;
-
 use pyo3::prelude::*;
 use animals_engine::{
     GameState, RelativeAction, HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE,
@@ -80,7 +78,6 @@ pub struct Simulation {
     max_preys: usize,
     initial_amphibias: usize,
     max_amphibias: usize,
-    visited: Vec<HashSet<(i32, i32)>>,
 }
 
 #[pymethods]
@@ -88,19 +85,17 @@ impl Simulation {
     #[new]
     fn new(num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize) -> Self {
         Self {
-            game_state: GameState::new(400, 400, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true),
+            game_state: GameState::new(400, 400, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true, false),
             num_snakes,
             initial_preys,
             max_preys,
             initial_amphibias,
             max_amphibias,
-            visited: vec![HashSet::new(); num_snakes],
         }
     }
 
     fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
-        self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true);
-        self.visited = vec![HashSet::new(); self.num_snakes];
+        self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true, false);
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
             obs.push(self.game_state.get_relative_observation(i).to_vec());
@@ -225,26 +220,29 @@ impl Simulation {
 
                     // Exploration bonus: only when nothing is smelled (smell ->
                     // pursue via shaping above, no smell -> explore), reward
-                    // entering a not-yet-visited coarse (4x4) grid cell.
-                    // If no new cell is entered, penalize slightly to discourage spinning.
+                    // entering a coarse (4x4) grid cell not visited recently
+                    // (`entered_new_patch`, tracked by the engine and also
+                    // exposed in the observation's visitation channel so this
+                    // is actually learnable). Otherwise penalize to discourage
+                    // spinning in place.
                     if cur_smell.is_none() {
-                        let head = snake.body[0];
-                        let coarse = (head.0 / 4, head.1 / 4);
-                        if self.visited[i].insert(coarse) {
+                        if snake.entered_new_patch {
                             r += 0.1;
                         } else {
-                            r -= 0.03;
+                            r -= 0.05;
                         }
                     }
                 }
+                // Small flat cost per turn (actions 1/2), tiny relative to the
+                // explore bonus (0.1) but enough to break a memoryless policy's
+                // indifference between turning and going straight when neither
+                // is otherwise reinforced — without deterring genuine pursuit
+                // turns, whose shaping/kill rewards dwarf it.
+                if actions[i] != 0 {
+                    r -= 0.002;
+                }
                 r
             };
-
-            // A snake's visited set only reflects "since last meal, this life" —
-            // clear it on death (respawns elsewhere) and on eating (fresh hunt).
-            if done || ate {
-                self.visited[i].clear();
-            }
 
             // Mitosis (body reached the split threshold) is the pinnacle event, so
             // it stays the largest single reward — but only just above a kill (50)
@@ -394,6 +392,9 @@ impl Simulation {
             dict.set_item("death_by_self", snake.death_by_self)?;
             dict.set_item("death_by_opponent", snake.death_by_opponent)?;
             dict.set_item("death_by_hunger", snake.death_by_hunger)?;
+            let head = snake.body.first().copied().unwrap_or((0, 0));
+            dict.set_item("head_x", head.0)?;
+            dict.set_item("head_y", head.1)?;
             stats.push(dict);
         }
         Ok(stats)

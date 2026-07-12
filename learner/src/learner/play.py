@@ -107,6 +107,10 @@ def main():
     parser.add_argument("--preys", type=int, default=1, help="Number of preys in the simulation")
     parser.add_argument("--amphibias", type=int, default=0, help="Number of amphibias in the simulation")
     parser.add_argument("--port", type=int, default=31337, help="TCP port to listen on")
+    parser.add_argument("--deterministic", action="store_true",
+                         help="Use argmax actions instead of sampling (training rolls out stochastically; "
+                              "sampling here matches that distribution and avoids exposing small turn "
+                              "biases as persistent circling)")
     args = parser.parse_args()
 
     num_snakes = args.snakes
@@ -266,7 +270,7 @@ def main():
                     for path in loaded_models:
                         idxs = [i for i in range(num_snakes) if model_paths[family_ids[i] % len(model_paths)] == path]
                         if idxs:
-                            acts, _ = loaded_models[path].predict(snake_obs[idxs], deterministic=True)
+                            acts, _ = loaded_models[path].predict(snake_obs[idxs], deterministic=args.deterministic)
                             for i, a in zip(idxs, acts):
                                 snake_action_map[i] = int(a)
                     actions = [snake_action_map[i] for i in range(num_snakes)]
@@ -276,7 +280,7 @@ def main():
                         for path in set(prey_model_paths):
                             idxs = [i for i in range(num_preys) if prey_model_paths[prey_family_ids[i] % len(prey_model_paths)] == path]
                             if idxs:
-                                acts, _ = loaded_prey_models[path].predict(prey_obs[idxs], deterministic=True)
+                                acts, _ = loaded_prey_models[path].predict(prey_obs[idxs], deterministic=args.deterministic)
                                 for i, a in zip(idxs, acts):
                                     prey_action_map[i] = int(a)
                     actions.extend(prey_action_map[i] for i in range(num_preys))
@@ -286,7 +290,7 @@ def main():
                         for path in set(amphibia_model_paths):
                             idxs = [i for i in range(num_amphibias) if amphibia_model_paths[amphibia_family_ids[i] % len(amphibia_model_paths)] == path]
                             if idxs:
-                                acts, _ = loaded_amphibia_models[path].predict(amphibia_obs[idxs], deterministic=True)
+                                acts, _ = loaded_amphibia_models[path].predict(amphibia_obs[idxs], deterministic=args.deterministic)
                                 for i, a in zip(idxs, acts):
                                     amphibia_action_map[i] = int(a)
                     actions.extend(amphibia_action_map[i] for i in range(num_amphibias))

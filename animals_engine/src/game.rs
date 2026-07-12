@@ -4,7 +4,7 @@ use crate::map::{Map, Terrain};
 use crate::snake::SnakeState;
 use crate::species::Species;
 use crate::direction::Direction;
-use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE};
+use crate::{HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_OBS_SIZE, VISIT_HORIZON};
 
 #[derive(Clone, Debug)]
 pub struct PreyState {
@@ -30,10 +30,12 @@ pub struct GameState {
     pub cell_changed: Vec<bool>,
     pub prey_died_this_tick: Vec<bool>,
     pub is_training: bool,
+    pub auto_steer: bool,
+    pub steps: u64,
 }
 
 impl GameState {
-    pub fn new(width: i32, height: i32, num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, is_training: bool) -> Self {
+    pub fn new(width: i32, height: i32, num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, is_training: bool, auto_steer: bool) -> Self {
         let map = Map::new(width, height);
 
         let mut preys = Vec::with_capacity(max_preys + max_amphibias);
@@ -55,6 +57,8 @@ impl GameState {
             cell_changed: vec![false; num_snakes],
             prey_died_this_tick: vec![false; total_preys],
             is_training,
+            auto_steer,
+            steps: 0,
         };
 
         for i in 0..num_snakes {
@@ -220,6 +224,7 @@ impl GameState {
             return;
         }
 
+        self.steps += 1;
         self.update_targets();
 
         for p in &mut self.prey_died_this_tick {
@@ -417,12 +422,14 @@ impl GameState {
             }
         }
 
-        // In game (non-training) mode, steer snakes away from a heading that
-        // would kill them outright this tick: if the current direction runs the
-        // head into a rock or a body, turn to a safe side instead of driving
-        // into it. Training keeps the raw dynamics so the policy still learns
-        // the lethal consequences of its own choices.
-        if !self.is_training {
+        // Anti-suicide steering: if the current direction runs the head into a
+        // rock or a body, turn to a safe side instead of driving into it. Gated
+        // by `auto_steer` (not `is_training`) so it stays off whenever a model
+        // drives (training AND AI-mode play) — the policy never experiences this
+        // override during training, so exposing it only at play time produces
+        // out-of-distribution orbiting behavior around obstacles. It's on only
+        // for manual keyboard play, where it's a QoL assist.
+        if self.auto_steer {
             for i in 0..self.snakes.len() {
                 if self.snakes[i].is_dead || self.snakes[i].body.is_empty() {
                     continue;
@@ -549,6 +556,23 @@ impl GameState {
             if !ate {
                 self.snakes[i].body.pop();
             }
+        }
+
+        // Track coarse (4x4-tile) cell visitation: drives both the
+        // exploration reward (`animals_simulation`) and the visitation
+        // observation channel (`get_relative_observation`). Recomputed every
+        // tick from the current head cell (not just on cell-change ticks) so a
+        // snake sitting still keeps re-marking its own cell as visited.
+        for i in 0..self.snakes.len() {
+            if self.snakes[i].is_dead { continue; }
+            let head = self.snakes[i].body[0];
+            let coarse = (head.0 / 4, head.1 / 4);
+            let last_visit = self.snakes[i].visited.get(&coarse).copied();
+            self.snakes[i].entered_new_patch = match last_visit {
+                None => true,
+                Some(t) => self.steps.saturating_sub(t) > VISIT_HORIZON,
+            };
+            self.snakes[i].visited.insert(coarse, self.steps);
         }
 
         // Snake Mitosis Check
@@ -710,6 +734,15 @@ impl GameState {
     ///   when nothing is smelled).
     /// - `[67]` — hunger: `steps_since_last_eat / HUNGER_LIMIT`.
     /// - `[68]` — own length / 100, capped at 1.
+    /// - `[69..133)` — grass-health of each of the same 64 fine-grid cells.
+    /// - `[133..197)` — 8x8 coarse visitation-recency grid, same rotated frame
+    ///   and cell order as `[0..64)` but each cell spans an 8x8-tile block (a
+    ///   2x2 group of the 4x4 coarse patches tracked in `SnakeState::visited`).
+    ///   Value is `1.0` for a patch just entered, decaying linearly to `0.0`
+    ///   over `VISIT_HORIZON` ticks (or if never visited) — the freshest
+    ///   (max) recency among the patches the cell covers. This externalizes
+    ///   the exploration reward's memory (see `animals_simulation`'s reward
+    ///   function) so a memoryless policy can act on "where have I been".
     pub fn get_relative_observation(&self, snake_index: usize) -> [f32; SNAKE_OBS_SIZE] {
         let mut obs = [0.0; SNAKE_OBS_SIZE];
         let snake = &self.snakes[snake_index];
@@ -797,6 +830,35 @@ impl GameState {
         }
         obs[67] = (snake.steps_since_last_eat as f32 / HUNGER_LIMIT as f32).min(1.0);
         obs[68] = (snake.body.len() as f32 / 100.0).min(1.0);
+
+        // Coarse (8x8-tile) visitation-recency grid at [133..197), same
+        // rotated frame/order as the fine grid. Each coarse observation cell
+        // covers a 2x2 block of the 4x4 patches keyed in `snake.visited`.
+        let mut vidx = 133;
+        for f in -3..=4 {
+            for r in -3..=4 {
+                let mut freshest: f32 = 0.0;
+                for df in [0, 4] {
+                    for dr in [0, 4] {
+                        let cx = head.0 + (f * 8 + df) * vec_straight.0 + (r * 8 + dr) * vec_right.0;
+                        let cy = head.1 + (f * 8 + df) * vec_straight.1 + (r * 8 + dr) * vec_right.1;
+                        let patch = (
+                            cx.rem_euclid(self.grid_width) / 4,
+                            cy.rem_euclid(self.grid_height) / 4,
+                        );
+                        if let Some(&last_visit) = snake.visited.get(&patch) {
+                            let age = self.steps.saturating_sub(last_visit) as f32;
+                            let recency = (1.0 - age / VISIT_HORIZON as f32).clamp(0.0, 1.0);
+                            if recency > freshest {
+                                freshest = recency;
+                            }
+                        }
+                    }
+                }
+                obs[vidx] = freshest;
+                vidx += 1;
+            }
+        }
 
         obs
     }
@@ -891,7 +953,7 @@ mod tests {
     /// bug where the observation builder skipped dead snakes entirely.
     #[test]
     fn dead_snake_corpse_is_visible_as_obstacle() {
-        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, true);
+        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, true, false);
 
         // Snake 1 (index 1) dies via a wall collision, leaving a body behind.
         state.snakes[1].body = vec![(5, 5), (5, 4), (5, 3)];
@@ -911,7 +973,7 @@ mod tests {
 
     #[test]
     fn prey_beyond_smell_range_is_not_sensed() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -930,7 +992,7 @@ mod tests {
 
     #[test]
     fn prey_within_smell_range_sets_direction() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -949,7 +1011,7 @@ mod tests {
 
     #[test]
     fn target_dropped_when_prey_leaves_smell_range() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -966,7 +1028,7 @@ mod tests {
 
     #[test]
     fn smell_wraps_around_torus_edge() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
         state.snakes[0].body = vec![(1, 50)];
         state.snakes[0].head_pos = (1.0, 50.0);
         state.snakes[0].direction = Direction::Up;
