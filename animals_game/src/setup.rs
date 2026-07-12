@@ -37,6 +37,7 @@ pub fn in_game_setup(
             config.num_preys.max(100), 
             config.num_amphibias,
             config.num_amphibias.max(100),
+            10,
             false,
             false, // AI-driven snakes: auto-steer would fight the policy's learned dynamics
         );

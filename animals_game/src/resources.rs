@@ -15,8 +15,10 @@ pub struct MatchConfig {
     pub snakes: Vec<String>, // List of model paths for each snake slot
     pub prey_models: Vec<String>,
     pub amphibia_models: Vec<String>,
+    pub corpsefag_models: Vec<String>,
     pub num_preys: usize,
     pub num_amphibias: usize,
+    pub num_corpsefags: usize,
 }
 
 #[derive(Resource)]
@@ -131,7 +133,7 @@ pub struct WorkerReply {
 }
 
 pub struct AiWorkerHandle {
-    pub obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>)>,
+    pub obs_tx: crossbeam_channel::Sender<(Vec<f32>, usize, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>)>,
     pub act_rx: crossbeam_channel::Receiver<WorkerReply>,
     pub awaiting: bool,
 }

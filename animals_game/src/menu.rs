@@ -20,12 +20,14 @@ pub struct MenuData {
     pub snake_models: Vec<usize>, // index into available_models
     pub num_preys: usize,
     pub num_amphibias: usize,
+    pub num_corpsefags: usize,
     // Prey / amphibia model choice as an index into a *virtual* list where 0 =
     // "Static (no model)" and 1.. maps to `available_models[idx - 1]`. Static
     // means no `--prey-model`/`--amphibia-model` is passed to the inference
     // server, so those actors default to action 0 (Stand) — i.e. static prey.
     pub prey_model: usize,
     pub amphibia_model: usize,
+    pub corpsefag_model: usize,
 }
 
 impl Default for MenuData {
@@ -39,8 +41,10 @@ impl Default for MenuData {
             // out-of-distribution and encourages circling. Still adjustable in menu.
             num_preys: 24,
             num_amphibias: 8,
+            num_corpsefags: 10,
             prey_model: 0,
             amphibia_model: 0,
+            corpsefag_model: 0,
         }
     }
 }
@@ -90,13 +94,18 @@ struct SavedMenuConfig {
     snakes: Vec<String>,
     num_preys: usize,
     num_amphibias: usize,
+    #[serde(default = "default_corpsefags")]
+    num_corpsefags: usize,
     // Model name, or "Static" for no model. `#[serde(default)]` keeps configs
     // written before these fields existed loadable (empty => pick the default).
     #[serde(default)]
     prey_model: String,
     #[serde(default)]
     amphibia_model: String,
+    #[serde(default)]
+    corpsefag_model: String,
 }
+fn default_corpsefags() -> usize { 10 }
 
 fn config_path() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -116,8 +125,10 @@ fn save_config(menu_data: &MenuData) {
         snakes: Vec::new(),
         num_preys: menu_data.num_preys,
         num_amphibias: menu_data.num_amphibias,
+        num_corpsefags: menu_data.num_corpsefags,
         prey_model: model_choice_save_name(menu_data, menu_data.prey_model),
         amphibia_model: model_choice_save_name(menu_data, menu_data.amphibia_model),
+        corpsefag_model: model_choice_save_name(menu_data, menu_data.corpsefag_model),
     };
     for &idx in &menu_data.snake_models {
         config.snakes.push(menu_data.available_models[idx].clone());
@@ -141,6 +152,9 @@ enum MenuAction {
     DecAmphibia,
     ChangePreyModel(isize),
     ChangeAmphibiaModel(isize),
+    IncCorpsefag,
+    DecCorpsefag,
+    ChangeCorpsefagModel(isize),
     StartGame,
 }
 
@@ -221,10 +235,27 @@ fn menu_action(
                         ((menu_data.amphibia_model as isize + *delta + n) % n) as usize;
                     changed = true;
                 }
+                MenuAction::IncCorpsefag => {
+                    menu_data.num_corpsefags += 1;
+                    changed = true;
+                }
+                MenuAction::DecCorpsefag => {
+                    if menu_data.num_corpsefags > 0 {
+                        menu_data.num_corpsefags -= 1;
+                        changed = true;
+                    }
+                }
+                MenuAction::ChangeCorpsefagModel(delta) => {
+                    let n = model_choice_count(&menu_data) as isize;
+                    menu_data.corpsefag_model =
+                        ((menu_data.corpsefag_model as isize + *delta + n) % n) as usize;
+                    changed = true;
+                }
                 MenuAction::StartGame => {
                     match_config.is_ai = true;
                     match_config.num_preys = menu_data.num_preys;
                     match_config.num_amphibias = menu_data.num_amphibias;
+                    match_config.num_corpsefags = menu_data.num_corpsefags;
                     match_config.snakes.clear();
                     for &idx in &menu_data.snake_models {
                         let model_name = &menu_data.available_models[idx];
@@ -243,6 +274,12 @@ fn menu_action(
                         let name =
                             menu_data.available_models[menu_data.amphibia_model - 1].clone();
                         match_config.amphibia_models = vec![name; menu_data.num_amphibias];
+                    }
+                    match_config.corpsefag_models.clear();
+                    if menu_data.num_corpsefags > 0 && menu_data.corpsefag_model != 0 {
+                        let name =
+                            menu_data.available_models[menu_data.corpsefag_model - 1].clone();
+                        match_config.corpsefag_models = vec![name; menu_data.num_corpsefags];
                     }
                     save_config(&menu_data);
                     app_state.set(AppState::InGame);
@@ -300,6 +337,12 @@ fn setup_menu(mut commands: Commands, mut menu_data: ResMut<MenuData>) {
         .position(|m| m == "amphibia_model.zip")
         .map(|i| i + 1)
         .unwrap_or(0);
+    let corpsefag_default = menu_data
+        .available_models
+        .iter()
+        .position(|m| m == "corpsefag_model.zip")
+        .map(|i| i + 1)
+        .unwrap_or(0);
 
     if let Some(saved) = load_config() {
         menu_data.snake_models.clear();
@@ -315,15 +358,19 @@ fn setup_menu(mut commands: Commands, mut menu_data: ResMut<MenuData>) {
         }
         menu_data.num_preys = saved.num_preys;
         menu_data.num_amphibias = saved.num_amphibias;
+        menu_data.num_corpsefags = saved.num_corpsefags;
         menu_data.prey_model = model_choice_from_name(&menu_data, &saved.prey_model, prey_default);
         menu_data.amphibia_model =
             model_choice_from_name(&menu_data, &saved.amphibia_model, amphibia_default);
+        menu_data.corpsefag_model =
+            model_choice_from_name(&menu_data, &saved.corpsefag_model, corpsefag_default);
     } else {
         for s in &mut menu_data.snake_models {
             *s = default_idx;
         }
         menu_data.prey_model = prey_default;
         menu_data.amphibia_model = amphibia_default;
+        menu_data.corpsefag_model = corpsefag_default;
     }
 
     build_menu_ui(&mut commands, &menu_data);
@@ -517,6 +564,47 @@ fn build_menu_ui(commands: &mut Commands, menu_data: &MenuData) {
                     ));
                 });
                 spawn_text_button!(row, ">", MenuAction::ChangeAmphibiaModel(1), 30.0);
+            });
+
+            // Corpsefag section
+            panel.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            }).with_children(|row| {
+                row.spawn((
+                    Text::new(format!("Corpsefags: {}", menu_data.num_corpsefags)),
+                    TextFont { font_size: 20.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+                spawn_text_button!(row, "-", MenuAction::DecCorpsefag, 30.0);
+                spawn_text_button!(row, "+", MenuAction::IncCorpsefag, 30.0);
+            });
+
+            // Corpsefag model selector
+            panel.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            }).with_children(|row| {
+                row.spawn((
+                    Text::new("Corpsefag model: "),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+                spawn_text_button!(row, "<", MenuAction::ChangeCorpsefagModel(-1), 30.0);
+                row.spawn(Node {
+                    width: Val::Px(200.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                }).with_children(|m_row| {
+                    m_row.spawn((
+                        Text::new(model_choice_name(menu_data, menu_data.corpsefag_model)),
+                        TextFont { font_size: 16.0, ..default() },
+                        TextColor(Color::srgb(0.5, 0.8, 1.0)),
+                    ));
+                });
+                spawn_text_button!(row, ">", MenuAction::ChangeCorpsefagModel(1), 30.0);
             });
 
             panel.spawn(Node { height: Val::Px(30.0), ..default() });

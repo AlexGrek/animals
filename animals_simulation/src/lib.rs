@@ -78,29 +78,47 @@ pub struct Simulation {
     max_preys: usize,
     initial_amphibias: usize,
     max_amphibias: usize,
+    num_corpsefags: usize,
 }
 
 #[pymethods]
 impl Simulation {
     #[new]
-    fn new(num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize) -> Self {
+    fn new(num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, num_corpsefags: usize) -> Self {
         Self {
-            game_state: GameState::new(400, 400, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, true, false),
+            game_state: GameState::new(400, 400, num_snakes, initial_preys, max_preys, initial_amphibias, max_amphibias, num_corpsefags, true, false),
             num_snakes,
             initial_preys,
             max_preys,
             initial_amphibias,
             max_amphibias,
+            num_corpsefags,
         }
     }
 
-    fn reset(&mut self) -> PyResult<Vec<Vec<f32>>> {
-        self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, true, false);
+    fn reset(&mut self) -> PyResult<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+        self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, self.num_corpsefags, true, false);
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
             obs.push(self.game_state.get_relative_observation(i).to_vec());
         }
-        Ok(obs)
+        
+        let mut prey_obs = Vec::new();
+        for i in 0..self.max_preys {
+            prey_obs.push(self.game_state.get_prey_observation(i).to_vec());
+        }
+
+        let mut amphibia_obs = Vec::new();
+        for i in self.max_preys..(self.max_preys + self.max_amphibias) {
+            amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
+        }
+
+        let mut corpsefag_obs = Vec::new();
+        for i in 0..self.num_corpsefags {
+            corpsefag_obs.push(self.game_state.get_corpsefag_observation(i).to_vec());
+        }
+
+        Ok((obs, prey_obs, amphibia_obs, corpsefag_obs))
     }
 
     fn get_all_prey_observations(&self) -> PyResult<Vec<Vec<f32>>> {
@@ -119,6 +137,11 @@ impl Simulation {
         Ok(obs)
     }
 
+    fn spawn_corpses(&mut self, num: usize) -> PyResult<()> {
+        self.game_state.spawn_corpses(num);
+        Ok(())
+    }
+
     /// Steps the simulation one tick.
     ///
     /// Returns a 12-tuple:
@@ -135,19 +158,12 @@ impl Simulation {
         actions: Vec<usize>,
         prey_actions: Vec<usize>,
         amphibia_actions: Vec<usize>,
+        corpsefag_actions: Vec<usize>,
     ) -> PyResult<(
-        Vec<Vec<f32>>,
-        Vec<f32>,
-        Vec<bool>,
-        Vec<Vec<f32>>,
-        Vec<Vec<f32>>,
-        Vec<f32>,
-        Vec<bool>,
-        Vec<Vec<f32>>,
-        Vec<f32>,
-        Vec<bool>,
-        Vec<Vec<f32>>,
-        Vec<Vec<f32>>,
+        (Vec<Vec<f32>>, Vec<f32>, Vec<bool>, Vec<Vec<f32>>),
+        (Vec<Vec<f32>>, Vec<f32>, Vec<bool>, Vec<Vec<f32>>),
+        (Vec<Vec<f32>>, Vec<f32>, Vec<bool>, Vec<Vec<f32>>),
+        (Vec<Vec<f32>>, Vec<f32>, Vec<bool>, Vec<Vec<f32>>),
     )> {
         for (i, &action) in actions.iter().enumerate() {
             if i < self.num_snakes {
@@ -189,7 +205,10 @@ impl Simulation {
 
         let mut all_prey_actions = prey_actions;
         all_prey_actions.extend(amphibia_actions);
-        self.game_state.step(1.0, &all_prey_actions);
+        
+        let prev_cf_points: Vec<i32> = self.game_state.corpsefags.iter().map(|c| c.points).collect();
+        
+        self.game_state.step(1.0, &all_prey_actions, &corpsefag_actions);
 
         // ---- Snake rewards + terminal observations (captured while still dead) ----
         let mut rewards = Vec::with_capacity(self.num_snakes);
@@ -364,19 +383,43 @@ impl Simulation {
             amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
         }
 
+        let mut cf_rewards = Vec::with_capacity(self.num_corpsefags);
+        let mut cf_dones = Vec::with_capacity(self.num_corpsefags);
+        let mut cf_terminal_obs = Vec::with_capacity(self.num_corpsefags);
+        for i in 0..self.num_corpsefags {
+            let cf = &self.game_state.corpsefags[i];
+            let done = cf.is_dead;
+            let mut reward = 0.0;
+            if done {
+                reward = -1.0;
+            } else {
+                if cf.points > prev_cf_points[i] {
+                    reward += 10.0;
+                }
+                if let Some(&act) = corpsefag_actions.get(i) {
+                    if act != 0 {
+                        reward -= 0.01;
+                    }
+                }
+            }
+            cf_rewards.push(reward);
+            cf_dones.push(done);
+            cf_terminal_obs.push(if done {
+                self.game_state.get_corpsefag_observation(i).to_vec()
+            } else {
+                vec![0.0; 13]
+            });
+        }
+        let mut cf_obs = Vec::with_capacity(self.num_corpsefags);
+        for i in 0..self.num_corpsefags {
+            cf_obs.push(self.game_state.get_corpsefag_observation(i).to_vec());
+        }
+
         Ok((
-            obs,
-            rewards,
-            dones,
-            terminal_obs,
-            prey_obs,
-            prey_rewards,
-            prey_dones,
-            amphibia_obs,
-            amphibia_rewards,
-            amphibia_dones,
-            prey_terminal_obs,
-            amphibia_terminal_obs,
+            (obs, rewards, dones, terminal_obs),
+            (prey_obs, prey_rewards, prey_dones, prey_terminal_obs),
+            (amphibia_obs, amphibia_rewards, amphibia_dones, amphibia_terminal_obs),
+            (cf_obs, cf_rewards, cf_dones, cf_terminal_obs),
         ))
     }
 

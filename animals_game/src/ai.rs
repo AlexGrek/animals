@@ -10,18 +10,19 @@ use crate::utils::{gather_observations, selected_i32};
 /// requests: it blocks on the socket round-trip (write observations, read
 /// actions) so the render thread never has to.
 pub fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
-    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>)>();
+    let (obs_tx, obs_rx) = crossbeam_channel::unbounded::<(Vec<f32>, usize, usize, usize, usize, i32, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>)>();
     let (act_tx, act_rx) = crossbeam_channel::unbounded::<WorkerReply>();
 
     std::thread::spawn(move || {
-        while let Ok((obs, num_snakes, num_preys, num_amphibias, selected, family_ids, prey_family_ids, amphibia_family_ids)) = obs_rx.recv() {
-            let mut payload = vec![0u8; 16 + (num_snakes + num_preys + num_amphibias) * 4 + obs.len() * 4];
+        while let Ok((obs, num_snakes, num_preys, num_amphibias, num_corpsefags, selected, family_ids, prey_family_ids, amphibia_family_ids, corpsefag_family_ids)) = obs_rx.recv() {
+            let mut payload = vec![0u8; 20 + (num_snakes + num_preys + num_amphibias + num_corpsefags) * 4 + obs.len() * 4];
             payload[0..4].copy_from_slice(&(num_snakes as i32).to_le_bytes());
             payload[4..8].copy_from_slice(&(num_preys as i32).to_le_bytes());
             payload[8..12].copy_from_slice(&(num_amphibias as i32).to_le_bytes());
-            payload[12..16].copy_from_slice(&selected.to_le_bytes());
+            payload[12..16].copy_from_slice(&(num_corpsefags as i32).to_le_bytes());
+            payload[16..20].copy_from_slice(&selected.to_le_bytes());
 
-            let mut offset = 16;
+            let mut offset = 20;
             for s in 0..num_snakes {
                 payload[offset..offset + 4].copy_from_slice(&(family_ids[s] as i32).to_le_bytes());
                 offset += 4;
@@ -34,6 +35,10 @@ pub fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
                 payload[offset..offset + 4].copy_from_slice(&(amphibia_family_ids[a] as i32).to_le_bytes());
                 offset += 4;
             }
+            for c in 0..num_corpsefags {
+                payload[offset..offset + 4].copy_from_slice(&(corpsefag_family_ids[c] as i32).to_le_bytes());
+                offset += 4;
+            }
 
             for (i, &val) in obs.iter().enumerate() {
                 payload[offset + i * 4..offset + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
@@ -42,7 +47,7 @@ pub fn spawn_ai_worker(mut stream: TcpStream) -> AiWorkerHandle {
                 break;
             }
 
-            let total_preys_sent = num_preys + num_amphibias;
+            let total_preys_sent = num_preys + num_amphibias + num_corpsefags;
             let mut action_bytes = vec![0u8; (num_snakes + total_preys_sent) * 4];
             if stream.read_exact(&mut action_bytes).is_err() {
                 break;
@@ -94,6 +99,7 @@ pub fn spawn_ai_server(
     let amphibia_model_paths = config.amphibia_models.clone();
     let num_preys = config.num_preys;
     let num_amphibias = config.num_amphibias;
+    let num_corpsefags = config.num_corpsefags;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -105,8 +111,8 @@ pub fn spawn_ai_server(
     let learner_dir = format!("{}/../learner", manifest_dir);
 
     let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string(), "--preys", &num_preys.to_string(), "--amphibias", &num_amphibias.to_string()])
-       .current_dir(learner_dir)
+    cmd.args(["run", "python", "-m", "learner.play", "--port", &port.to_string(), "--snakes", &num_snakes.to_string(), "--preys", &num_preys.to_string(), "--amphibias", &num_amphibias.to_string(), "--corpsefags", &num_corpsefags.to_string()])
+       .current_dir(learner_dir.clone())
        .env("PYTHONPATH", "src");
 
     for m in model_paths {
@@ -114,14 +120,20 @@ pub fn spawn_ai_server(
         cmd.arg(m);
     }
 
-    for pm in prey_model_paths {
+    if let Some(pm) = prey_model_paths.first() {
         cmd.arg("--prey-model");
         cmd.arg(pm);
     }
     
-    for am in amphibia_model_paths {
+    if let Some(am) = amphibia_model_paths.first() {
         cmd.arg("--amphibia-model");
         cmd.arg(am);
+    }
+    
+    let corpsefag_model_paths = &config.corpsefag_models;
+    if let Some(cm) = corpsefag_model_paths.first() {
+        cmd.arg("--corpsefag-model");
+        cmd.arg(cm);
     }
 
     cmd.stderr(std::process::Stdio::piped());
@@ -221,7 +233,9 @@ pub fn queue_ai_inference(engine: &GameState, worker: &mut AiWorkerHandle, selec
     let family_ids: Vec<u32> = engine.snakes.iter().map(|s| s.family_id).collect();
     let prey_family_ids: Vec<u32> = engine.preys.iter().filter(|p| p.species == Species::Prey).map(|p| p.family_id).collect();
     let amphibia_family_ids: Vec<u32> = engine.preys.iter().filter(|p| p.species == Species::Amphibia).map(|p| p.family_id).collect();
-    if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, sel, family_ids, prey_family_ids, amphibia_family_ids)).is_err() {
+    let num_corpsefags = engine.corpsefags.len();
+    let corpsefag_family_ids: Vec<u32> = engine.corpsefags.iter().map(|c| c.family_id).collect();
+    if worker.obs_tx.send((obs, num_snakes, num_preys, num_amphibias, num_corpsefags, sel, family_ids, prey_family_ids, amphibia_family_ids, corpsefag_family_ids)).is_err() {
         eprintln!("AI worker thread stopped");
         std::process::exit(1);
     }

@@ -32,6 +32,12 @@ The RL system trains three independent policies in a predator/prey loop: **Snake
 
 This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8 cell radius) is often too small to see an oncoming snake in time. Note this is asymmetric with the snake's sense of prey: prey always see the globally nearest snake head, while a snake only _smells_ prey within `SMELL_RANGE` (see above) — deliberate, so a snake must explore to find prey rather than beelining toward one anywhere on the map.
 
+### Corpsefag (`CORPSEFAG_OBS_SIZE = 18` floats, `animals_engine/src/game.rs::get_corpsefag_observation`)
+
+- `[0..9)` — 3x3 local grid centered on the Corpsefag, tracking physical obstacles (like rocks, water, or living snakes).
+- `[9..17)` — 8 directional "smell" rays (N, NE, E, SE, S, SW, W, NW) looking for static snake corpses. If a corpse is within `SMELL_RANGE` (`133`), the ray records its proximity as `1.0 - (dist / 133.0)`, giving a stronger signal the closer it is. If no corpse is smelled in that direction, the value is `0.0`.
+- `[17]` — Normalized points (current score).
+
 ## Reward Functions (`animals_simulation/src/lib.rs::step`)
 
 ### Snake

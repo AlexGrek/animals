@@ -68,6 +68,16 @@ pub struct Apple {
 }
 
 #[derive(Component)]
+pub struct CorpsefagSprite {
+    pub idx: usize,
+}
+
+#[derive(Component)]
+pub struct EggSprite {
+    pub idx: usize,
+}
+
+#[derive(Component)]
 pub struct MapTile;
 
 /// Marks a sprite that should be smoothly interpolated between two world

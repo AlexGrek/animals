@@ -14,7 +14,7 @@ pub struct SnakeState {
     pub death_by_opponent: bool,
     pub death_by_hunger: bool,
     pub steps_since_last_eat: u32,
-    pub tracked_target: Option<usize>,
+    pub tracked_target: Option<(i32, i32)>,
     pub mitosis_count: u32,
     pub family_id: u32,
     /// Coarse (4x4-tile) cell -> the `GameState::steps` tick it was last

@@ -20,6 +20,22 @@ pub struct PreyState {
 }
 
 #[derive(Clone, Debug)]
+pub struct EggState {
+    pub pos: (i32, i32),
+    pub ticks_alive: i32,
+    pub is_dead: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CorpsefagState {
+    pub pos: (f32, f32),
+    pub is_dead: bool,
+    pub points: i32,
+    pub family_id: u32,
+}
+
+
+#[derive(Clone, Debug)]
 pub struct GameState {
     pub snakes: Vec<SnakeState>,
     pub preys: Vec<PreyState>,
@@ -38,10 +54,12 @@ pub struct GameState {
     /// that living snakes read as `-0.5` and die on collision. Stays empty in
     /// training (which respawns instead of reaping), so it costs nothing there.
     pub corpses: HashSet<(i32, i32)>,
+    pub eggs: Vec<EggState>,
+    pub corpsefags: Vec<CorpsefagState>,
 }
 
 impl GameState {
-    pub fn new(width: i32, height: i32, num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, is_training: bool, auto_steer: bool) -> Self {
+    pub fn new(width: i32, height: i32, num_snakes: usize, initial_preys: usize, max_preys: usize, initial_amphibias: usize, max_amphibias: usize, num_corpsefags: usize, is_training: bool, auto_steer: bool) -> Self {
         let map = Map::new(width, height);
 
         let mut preys = Vec::with_capacity(max_preys + max_amphibias);
@@ -66,6 +84,8 @@ impl GameState {
             auto_steer,
             steps: 0,
             corpses: HashSet::new(),
+            eggs: Vec::new(),
+            corpsefags: Vec::with_capacity(num_corpsefags),
         };
 
         for i in 0..num_snakes {
@@ -76,6 +96,9 @@ impl GameState {
             if !state.preys[i].is_dead {
                 state.spawn_prey(i);
             }
+        }
+        for i in 0..num_corpsefags {
+            state.spawn_corpsefag();
         }
         state.update_targets();
         state
@@ -251,7 +274,7 @@ impl GameState {
         true
     }
 
-    pub fn step(&mut self, dt: f32, prey_actions: &[usize]) {
+    pub fn step(&mut self, dt: f32, prey_actions: &[usize], corpsefag_actions: &[usize]) {
         if self.game_over {
             return;
         }
@@ -268,6 +291,32 @@ impl GameState {
         }
 
         let mut preys_to_revive = Vec::new();
+
+        // Tick eggs
+        let mut hatched_positions = Vec::new();
+        for egg in &mut self.eggs {
+            if egg.is_dead { continue; }
+            egg.ticks_alive += 1;
+            if egg.ticks_alive >= 200 {
+                egg.is_dead = true; // hatched
+                hatched_positions.push(egg.pos);
+            }
+        }
+        for pos in hatched_positions {
+            if let Some(idx) = self.corpsefags.iter().position(|c| c.is_dead) {
+                self.corpsefags[idx].pos = (pos.0 as f32, pos.1 as f32);
+                self.corpsefags[idx].is_dead = false;
+                self.corpsefags[idx].points = 0;
+            } else {
+                let next_idx = self.corpsefags.len();
+                self.corpsefags.push(CorpsefagState {
+                    pos: (pos.0 as f32, pos.1 as f32),
+                    is_dead: false,
+                    points: 0,
+                    family_id: (next_idx % 2) as u32,
+                });
+            }
+        }
 
         // Increment hunger and check for hunger death
         for i in 0..self.snakes.len() {
@@ -454,6 +503,79 @@ impl GameState {
             }
         }
 
+        // 1.5 Move Corpsefags
+        let mut new_eggs = Vec::new();
+        for i in 0..self.corpsefags.len() {
+            if self.corpsefags[i].is_dead { continue; }
+
+            let c_action = corpsefag_actions.get(i).copied().unwrap_or(0);
+            let dir_vec = match c_action {
+                1 => (0, 1),   // Up
+                2 => (1, 0),   // Right
+                3 => (0, -1),  // Down
+                4 => (-1, 0),  // Left
+                _ => (0, 0),   // Stand
+            };
+
+            if dir_vec != (0, 0) {
+                let prev_pos = self.corpsefags[i].pos;
+                let px_before = prev_pos.0.round() as i32;
+                let py_before = prev_pos.1.round() as i32;
+                let terrain = self.map.get_terrain(px_before, py_before);
+                let speed = Species::Corpsefag.speed_on(terrain);
+
+                self.corpsefags[i].pos.0 += dir_vec.0 as f32 * speed * dt;
+                self.corpsefags[i].pos.1 += dir_vec.1 as f32 * speed * dt;
+                self.corpsefags[i].pos.0 = self.corpsefags[i].pos.0.rem_euclid(self.grid_width as f32);
+                self.corpsefags[i].pos.1 = self.corpsefags[i].pos.1.rem_euclid(self.grid_height as f32);
+
+                let px_after = self.corpsefags[i].pos.0.round() as i32;
+                let py_after = self.corpsefags[i].pos.1.round() as i32;
+                let terrain_after = self.map.get_terrain(px_after, py_after);
+                
+                let grid_pos_after = (px_after, py_after);
+                let mut blocked = terrain_after == Terrain::Rock || terrain_after == Terrain::Water;
+                if !blocked {
+                    for p in &self.preys {
+                        if !p.is_dead && (p.pos.0.round() as i32, p.pos.1.round() as i32) == grid_pos_after {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+                if !blocked {
+                    for (j, cf) in self.corpsefags.iter().enumerate() {
+                        if i != j && !cf.is_dead && (cf.pos.0.round() as i32, cf.pos.1.round() as i32) == grid_pos_after {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+
+                if blocked {
+                    self.corpsefags[i].pos = prev_pos;
+                }
+            }
+
+            // Corpsefag eating corpses
+            let cx = self.corpsefags[i].pos.0.round() as i32;
+            let cy = self.corpsefags[i].pos.1.round() as i32;
+            if self.corpses.remove(&(cx, cy)) {
+                self.corpsefags[i].points += 1;
+            }
+
+            // Laying egg
+            if self.corpsefags[i].points >= 7 {
+                self.corpsefags[i].points -= 7;
+                new_eggs.push(EggState {
+                    pos: (cx, cy),
+                    ticks_alive: 0,
+                    is_dead: false,
+                });
+            }
+        }
+        self.eggs.extend(new_eggs);
+
         // Anti-suicide steering: if the current direction runs the head into a
         // rock or a body, turn to a safe side instead of driving into it. Gated
         // by `auto_steer` (not `is_training`) so it stays off whenever a model
@@ -594,6 +716,39 @@ impl GameState {
             }
 
             if !ate {
+                for e_idx in 0..self.eggs.len() {
+                    if !self.eggs[e_idx].is_dead {
+                        let dx = (head.0 - self.eggs[e_idx].pos.0).abs();
+                        let dy = (head.1 - self.eggs[e_idx].pos.1).abs();
+                        if dx <= 1 && dy <= 1 {
+                            self.snakes[i].score += 1;
+                            self.snakes[i].steps_since_last_eat = 0;
+                            self.eggs[e_idx].is_dead = true;
+                            ate = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !ate {
+                for c_idx in 0..self.corpsefags.len() {
+                    if !self.corpsefags[c_idx].is_dead {
+                        let c_grid_pos = (self.corpsefags[c_idx].pos.0.round() as i32, self.corpsefags[c_idx].pos.1.round() as i32);
+                        let dx = (head.0 - c_grid_pos.0).abs();
+                        let dy = (head.1 - c_grid_pos.1).abs();
+                        if dx <= 1 && dy <= 1 {
+                            self.snakes[i].score += 1;
+                            self.snakes[i].steps_since_last_eat = 0;
+                            self.corpsefags[c_idx].is_dead = true;
+                            ate = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !ate {
                 self.snakes[i].body.pop();
             }
         }
@@ -699,6 +854,52 @@ impl GameState {
         }
     }
 
+    pub fn spawn_corpsefag(&mut self) {
+        let mut rng = rand::thread_rng();
+        loop {
+            let x = rng.gen_range(0..self.grid_width);
+            let y = rng.gen_range(0..self.grid_height);
+            let pos = (x as f32, y as f32);
+
+            let terrain = self.map.get_terrain(x, y);
+            if terrain == Terrain::Rock || terrain == Terrain::Water {
+                continue;
+            }
+
+            let grid_pos = (x, y);
+            let mut free = true;
+            for s in &self.snakes {
+                if s.body.contains(&grid_pos) {
+                    free = false;
+                    break;
+                }
+            }
+            for p in &self.preys {
+                if !p.is_dead && (p.pos.0.round() as i32, p.pos.1.round() as i32) == grid_pos {
+                    free = false;
+                    break;
+                }
+            }
+            for cf in &self.corpsefags {
+                if !cf.is_dead && (cf.pos.0.round() as i32, cf.pos.1.round() as i32) == grid_pos {
+                    free = false;
+                    break;
+                }
+            }
+            
+            if free {
+                let next_idx = self.corpsefags.len();
+                self.corpsefags.push(CorpsefagState {
+                    pos,
+                    is_dead: false,
+                    points: 0,
+                    family_id: (next_idx % 2) as u32,
+                });
+                break;
+            }
+        }
+    }
+
     /// Torus-wrapped `(dx, dy)` from grid cell `from` to grid cell `to`, each
     /// component in `(-dim/2, dim/2]` — the shortest path across the wraparound
     /// map edge.
@@ -725,24 +926,34 @@ impl GameState {
         for s in 0..self.snakes.len() {
             if self.snakes[s].is_dead { continue; }
             let head = self.snakes[s].body[0];
-            let mut target_idx = self.snakes[s].tracked_target;
-            if let Some(idx) = target_idx {
-                let drop = match self.preys.get(idx) {
-                    None => true,
-                    Some(p) => {
-                        if p.is_dead {
-                            true
-                        } else {
-                            let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
-                            self.torus_manhattan(head, p_grid) > SMELL_RANGE
+            let mut target_pos = self.snakes[s].tracked_target;
+            if let Some(pos) = target_pos {
+                // Drop if it moved too far or no longer exists (eaten).
+                // It's eaten if neither preys nor eggs have a living entity at this pos.
+                let mut exists = false;
+                for p in &self.preys {
+                    if !p.is_dead && (p.pos.0.round() as i32, p.pos.1.round() as i32) == pos {
+                        exists = true;
+                        break;
+                    }
+                }
+                if !exists {
+                    for e in &self.eggs {
+                        if !e.is_dead && e.pos == pos {
+                            exists = true;
+                            break;
                         }
                     }
-                };
-                if drop { target_idx = None; }
+                }
+                
+                if !exists || self.torus_manhattan(head, pos) > SMELL_RANGE {
+                    target_pos = None;
+                }
             }
-            if target_idx.is_none() {
+            if target_pos.is_none() {
                 let mut closest_dist = f32::MAX;
-                for (i, p) in self.preys.iter().enumerate() {
+                let mut closest_pos = None;
+                for p in &self.preys {
                     if !p.is_dead {
                         let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
                         if self.torus_manhattan(head, p_grid) > SMELL_RANGE { continue; }
@@ -750,12 +961,24 @@ impl GameState {
                         let d = ((dx * dx + dy * dy) as f32).sqrt();
                         if d < closest_dist {
                             closest_dist = d;
-                            target_idx = Some(i);
+                            closest_pos = Some(p_grid);
                         }
                     }
                 }
-                self.snakes[s].tracked_target = target_idx;
+                for e in &self.eggs {
+                    if !e.is_dead {
+                        if self.torus_manhattan(head, e.pos) > SMELL_RANGE { continue; }
+                        let (dx, dy) = self.torus_delta(head, e.pos);
+                        let d = ((dx * dx + dy * dy) as f32).sqrt();
+                        if d < closest_dist {
+                            closest_dist = d;
+                            closest_pos = Some(e.pos);
+                        }
+                    }
+                }
+                target_pos = closest_pos;
             }
+            self.snakes[s].tracked_target = target_pos;
         }
     }
 
@@ -821,6 +1044,11 @@ impl GameState {
                 prey_cells.insert((p.pos.0.round() as i32, p.pos.1.round() as i32));
             }
         }
+        for e in &self.eggs {
+            if !e.is_dead {
+                prey_cells.insert(e.pos);
+            }
+        }
 
         let mut idx = 0;
         for f in -3..=4 {
@@ -851,13 +1079,9 @@ impl GameState {
             }
         }
 
-        // Unit direction + normalized distance to the nearest alive prey. A unit
-        // vector keeps the heading signal strong at any range (the old
-        // `dx / max_dim` encoding shrank to ~0.01 for nearby prey).
+        // Unit direction + normalized distance to the nearest alive prey/egg.
         let mut closest: Option<(i32, i32, f32)> = None;
-        if let Some(idx) = snake.tracked_target {
-            let p = &self.preys[idx];
-            let p_grid = (p.pos.0.round() as i32, p.pos.1.round() as i32);
+        if let Some(p_grid) = snake.tracked_target {
             let (dx, dy) = self.torus_delta(head, p_grid);
             let d = ((dx * dx + dy * dy) as f32).sqrt();
             closest = Some((dx, dy, d));
@@ -982,6 +1206,94 @@ impl GameState {
 
         obs
     }
+
+    pub fn get_corpsefag_observation(&self, index: usize) -> [f32; 18] {
+        let mut obs = [0.0; 18];
+        let cf = &self.corpsefags[index];
+        let pos = (cf.pos.0.round() as i32, cf.pos.1.round() as i32);
+
+        let mut obstacles: HashSet<(i32, i32)> = HashSet::new();
+        for s in &self.snakes {
+            if !s.is_dead {
+                obstacles.extend(s.body.iter().copied());
+            }
+        }
+        for p in &self.preys {
+            if !p.is_dead {
+                obstacles.insert((p.pos.0.round() as i32, p.pos.1.round() as i32));
+            }
+        }
+        for (i, c) in self.corpsefags.iter().enumerate() {
+            if i != index && !c.is_dead {
+                obstacles.insert((c.pos.0.round() as i32, c.pos.1.round() as i32));
+            }
+        }
+
+        let mut idx = 0;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let cx = pos.0 + dx;
+                let cy = pos.1 + dy;
+                let cx_wrapped = cx.rem_euclid(self.grid_width);
+                let cy_wrapped = cy.rem_euclid(self.grid_height);
+                let cell = (cx_wrapped, cy_wrapped);
+                let terrain = self.map.get_terrain(cx_wrapped, cy_wrapped);
+
+                obs[idx] = if terrain == Terrain::Rock || terrain == Terrain::Water || obstacles.contains(&cell) {
+                    -1.0
+                } else {
+                    Species::Corpsefag.speed_on(terrain) * 0.5
+                };
+                idx += 1;
+            }
+        }
+
+        let mut ray_distances = [f32::MAX; 8];
+        for &corpse in &self.corpses {
+            let (dx, dy) = self.torus_delta(pos, corpse);
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            if d <= 133.0 {
+                let mut angle = (dy as f32).atan2(dx as f32);
+                if angle < 0.0 {
+                    angle += std::f32::consts::TAU;
+                }
+                let sector = ((angle + std::f32::consts::TAU / 16.0) / (std::f32::consts::TAU / 8.0)).floor() as usize % 8;
+                if d < ray_distances[sector] {
+                    ray_distances[sector] = d;
+                }
+            }
+        }
+
+        for i in 0..8 {
+            if ray_distances[i] <= 133.0 {
+                obs[9 + i] = 1.0 - (ray_distances[i] / 133.0);
+            } else {
+                obs[9 + i] = 0.0;
+            }
+        }
+
+        obs[17] = (cf.points as f32 / 7.0).min(1.0);
+        
+        obs
+    }
+
+    pub fn spawn_corpses(&mut self, num: usize) {
+        let mut rng = rand::thread_rng();
+        for _ in 0..num {
+            let mut x;
+            let mut y;
+            loop {
+                x = rng.gen_range(0..self.grid_width);
+                y = rng.gen_range(0..self.grid_height);
+                let terrain = self.map.get_terrain(x, y);
+                if terrain != Terrain::Rock && terrain != Terrain::Water {
+                    break;
+                }
+            }
+            self.corpses.insert((x, y));
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -998,7 +1310,7 @@ mod tests {
         // 100x100 (not 20x20): a small map's random terrain can leave no free
         // spawn cell, hanging `GameState::new`'s spawn loop — a pre-existing
         // flakiness the larger smell tests avoid.
-        let mut state = GameState::new(100, 100, 3, 0, 0, 0, 0, false, false);
+        let mut state = GameState::new(100, 100, 3, 0, 0, 0, 0, 0, false, false);
         assert_eq!(state.snakes.len(), 3);
         assert_eq!(state.cell_changed.len(), 3);
 
@@ -1027,7 +1339,7 @@ mod tests {
     /// input distribution is unchanged.
     #[test]
     fn corpse_cell_is_visible_as_obstacle() {
-        let mut state = GameState::new(100, 100, 1, 0, 0, 0, 0, false, false);
+        let mut state = GameState::new(100, 100, 1, 0, 0, 0, 0, 0, false, false);
         // Force all-grass terrain so the tested cell is deterministically not a
         // rock (rock takes precedence over the corpse marker in the obs).
         state.map.tiles = vec![Terrain::Grass; (state.grid_width * state.grid_height) as usize];
@@ -1053,7 +1365,7 @@ mod tests {
     /// bug where the observation builder skipped dead snakes entirely.
     #[test]
     fn dead_snake_corpse_is_visible_as_obstacle() {
-        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, true, false);
+        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, 0, true, false);
 
         // Snake 1 (index 1) dies via a wall collision, leaving a body behind.
         state.snakes[1].body = vec![(5, 5), (5, 4), (5, 3)];
@@ -1139,4 +1451,22 @@ mod tests {
         state.update_targets();
         assert_eq!(state.snakes[0].tracked_target, Some(0), "prey must be sensed across the torus wrap");
     }
+
+    pub fn spawn_corpses(&mut self, num: usize) {
+        let mut rng = rand::thread_rng();
+        for _ in 0..num {
+            let mut x;
+            let mut y;
+            loop {
+                x = rng.gen_range(0..self.grid_width);
+                y = rng.gen_range(0..self.grid_height);
+                let terrain = self.map.get_terrain(x, y);
+                if terrain != Terrain::Rock && terrain != Terrain::Water {
+                    break;
+                }
+            }
+            self.corpses.push((x, y));
+        }
+    }
+
 }

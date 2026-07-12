@@ -46,6 +46,14 @@ tasks:
     cmds:
       - PYTHONPATH=src uv run python -m learner.train_amphibia --steps {{.STEPS}}
 
+  train-corpsefag:
+    desc: "Train the corpsefag ML model against a frozen snake model. Usage: task train-corpsefag STEPS=1000000"
+    dir: learner
+    vars:
+      STEPS: '{{default "1000000" .STEPS}}'
+    cmds:
+      - PYTHONPATH=src uv run python -m learner.train_corpsefag --steps {{.STEPS}}
+
   train-all-stages:
     desc: "Run the full co-evolution pipeline (snake -> prey -> amphibia -> snake), incl. env init. Windows uses the PowerShell port."
     dir: learner

@@ -9,6 +9,8 @@
   ],
   "num_preys": 11,
   "num_amphibias": 11,
+  "num_corpsefags": 10,
   "prey_model": "prey_model.zip",
-  "amphibia_model": "amphibia_model.zip"
+  "amphibia_model": "amphibia_model.zip",
+  "corpsefag_model": "corpsefag_model.zip"
 }

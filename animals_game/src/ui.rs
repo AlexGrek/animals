@@ -49,11 +49,25 @@ pub fn update_stats_text(
             alive_preys += 1;
         }
     }
+    let mut alive_corpsefags = 0;
+    for cf in &engine.0.corpsefags {
+        if !cf.is_dead {
+            alive_corpsefags += 1;
+        }
+    }
+    let mut alive_eggs = 0;
+    for e in &engine.0.eggs {
+        if !e.is_dead {
+            alive_eggs += 1;
+        }
+    }
     
     let text = format!(
-        "Snakes: {} | Preys: {} | Client: {:.0} FPS | AI: {:.0} FPS",
-        engine.0.snakes.len(),
+        "Snakes: {} | Preys: {} | Corpsefags: {} | Eggs: {} | Client: {:.0} FPS | AI: {:.0} FPS",
+        engine.0.snakes.iter().filter(|s| !s.is_dead).count(),
         alive_preys,
+        alive_corpsefags,
+        alive_eggs,
         stats.client_fps,
         stats.inference_fps
     );

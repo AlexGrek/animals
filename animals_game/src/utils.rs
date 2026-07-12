@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use animals_engine::{GameState, Species, PREY_OBS_SIZE, SNAKE_OBS_SIZE};
+use animals_engine::{GameState, Species, PREY_OBS_SIZE, SNAKE_OBS_SIZE, CORPSEFAG_OBS_SIZE};
 use crate::resources::SelectedSnake;
 
 /// Colour used for a snake's head and its header line, so the two are visually
@@ -11,7 +11,7 @@ pub fn snake_color(_idx: usize, _total: usize) -> Color {
 /// Flattens every snake observation followed by every prey observation into one
 /// buffer, in the same layout the Python inference server expects.
 pub fn gather_observations(game: &GameState) -> Vec<f32> {
-    let mut obs = Vec::with_capacity(game.snakes.len() * SNAKE_OBS_SIZE + game.preys.len() * PREY_OBS_SIZE);
+    let mut obs = Vec::with_capacity(game.snakes.len() * SNAKE_OBS_SIZE + game.preys.len() * PREY_OBS_SIZE + game.corpsefags.len() * CORPSEFAG_OBS_SIZE);
     for s in 0..game.snakes.len() {
         obs.extend_from_slice(&game.get_relative_observation(s));
     }
@@ -24,6 +24,9 @@ pub fn gather_observations(game: &GameState) -> Vec<f32> {
         if game.preys[p].species == Species::Amphibia {
             obs.extend_from_slice(&game.get_prey_observation(p));
         }
+    }
+    for c in 0..game.corpsefags.len() {
+        obs.extend_from_slice(&game.get_corpsefag_observation(c));
     }
     obs
 }

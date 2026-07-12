@@ -63,6 +63,7 @@ pub fn keyboard_input(
         let num_snakes = engine.0.snakes.len();
         let num_preys = config.num_preys;
         let num_amphibias = config.num_amphibias;
+        let num_corpsefags = config.num_corpsefags;
         let is_ai = config.is_ai;
         engine.0 = GameState::new(
             GRID_WIDTH,
@@ -72,6 +73,7 @@ pub fn keyboard_input(
             num_preys.max(100),
             num_amphibias,
             num_amphibias.max(100),
+            num_corpsefags,
             false,
             !is_ai,
         );
@@ -151,11 +153,14 @@ pub fn game_tick(
                             engine.0.set_direction(s, dir);
                         }
                     }
+                    let num_preys = engine.0.preys.len();
                     let prey_actions: Vec<usize> =
-                        actions[num_snakes..].iter().map(|&a| a as usize).collect();
+                        actions[num_snakes..num_snakes+num_preys].iter().map(|&a| a as usize).collect();
+                    let corpsefag_actions: Vec<usize> =
+                        actions[num_snakes+num_preys..].iter().map(|&a| a as usize).collect();
                     prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
                     prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
-                    engine.0.step(1.0, &prey_actions);
+                    engine.0.step(1.0, &prey_actions, &corpsefag_actions);
                     spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
                     engine.0.respawn_dead_preys();
                     // Ecosystem model: a dead snake's entity is reaped (no
@@ -177,9 +182,11 @@ pub fn game_tick(
         } else {
             let num_preys = engine.0.preys.len();
             let prey_actions = vec![0; num_preys];
+            let num_cf = engine.0.corpsefags.len();
+            let cf_actions = vec![0; num_cf];
             prev.snake_bodies = engine.0.snakes.iter().map(|s| s.body.clone()).collect();
             prev.prey_pos = engine.0.preys.iter().map(|p| p.pos).collect();
-            engine.0.step(1.0, &prey_actions);
+            engine.0.step(1.0, &prey_actions, &cf_actions);
             spawn_particles_for_dead_preys(&mut commands, &engine.0, &prev);
             engine.0.respawn_dead_preys();
             // Same ecosystem model as AI mode: dead snakes become static corpses

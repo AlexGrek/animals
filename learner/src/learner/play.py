@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 
-from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE
+from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE, CORPSEFAG_OBS_SIZE
 # Ensure the custom feature extractor class is importable when SB3 unpickles a
 # checkpoint's policy_kwargs (the class is referenced by name inside the .zip).
 import learner.policy  # noqa: F401
@@ -103,9 +103,11 @@ def main():
     parser.add_argument("--model", action="append", type=str, help="Path to SB3 model(s) for snakes")
     parser.add_argument("--prey-model", action="append", type=str, help="Path to SB3 model(s) for preys")
     parser.add_argument("--amphibia-model", action="append", type=str, help="Path to SB3 model(s) for amphibias")
+    parser.add_argument("--corpsefag-model", action="append", type=str, help="Path to SB3 model(s) for corpsefags")
     parser.add_argument("--snakes", type=int, default=2, help="Number of snakes in the simulation")
     parser.add_argument("--preys", type=int, default=1, help="Number of preys in the simulation")
     parser.add_argument("--amphibias", type=int, default=0, help="Number of amphibias in the simulation")
+    parser.add_argument("--corpsefags", type=int, default=0, help="Number of corpsefags in the simulation")
     parser.add_argument("--port", type=int, default=31337, help="TCP port to listen on")
     parser.add_argument("--deterministic", action="store_true",
                          help="Use argmax actions instead of sampling (training rolls out stochastically; "
@@ -116,6 +118,7 @@ def main():
     num_snakes = args.snakes
     num_preys = args.preys
     num_amphibias = args.amphibias
+    num_corpsefags = args.corpsefags
 
     model_paths = args.model
     if not model_paths:
@@ -208,12 +211,39 @@ def main():
     else:
         amphibia_models = [None] * num_amphibias
 
+    # Handle multiple corpsefag models
+    corpsefag_model_paths = args.corpsefag_model
+    corpsefag_models = []
+    if corpsefag_model_paths:
+        if len(corpsefag_model_paths) == 1:
+            corpsefag_model_paths = corpsefag_model_paths * num_corpsefags
+        elif len(corpsefag_model_paths) != num_corpsefags:
+            logger.error(f"Number of corpsefag models ({len(corpsefag_model_paths)}) must be 1 or equal to number of corpsefags ({num_corpsefags}).")
+            sys.exit(1)
+
+        resolved_corpsefag_paths = []
+        for path in corpsefag_model_paths:
+            resolved = resolve_model_path(path)
+            if resolved is None:
+                logger.error(f"Corpsefag model not found at {path}.")
+                sys.exit(1)
+            resolved_corpsefag_paths.append(resolved)
+        corpsefag_model_paths = resolved_corpsefag_paths
+
+        loaded_corpsefag_models = {}
+        for path in corpsefag_model_paths:
+            if path not in loaded_corpsefag_models:
+                logger.info(f"Loading corpsefag model from {path}...")
+                loaded_corpsefag_models[path] = PPO.load(path)
+                check_obs_size(loaded_corpsefag_models[path], CORPSEFAG_OBS_SIZE, path, "Corpsefag")
+            corpsefag_models.append(loaded_corpsefag_models[path])
+    else:
+        corpsefag_models = [None] * num_corpsefags
+
     logger.info("All models loaded successfully.")
 
     # Start TCP Server
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:
@@ -237,13 +267,13 @@ def main():
 
             try:
                 while True:
-                    header = recvall(conn, 16)
+                    header = recvall(conn, 20)
                     if not header:
                         break
-                    num_snakes, num_preys, num_amphibias, selected = struct.unpack('<4i', header)
+                    num_snakes, num_preys, num_amphibias, num_corpsefags, selected = struct.unpack('<5i', header)
 
-                    bytes_expected = (num_snakes + num_preys + num_amphibias) * 4 + (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE) * 4
-                    floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE
+                    bytes_expected = (num_snakes + num_preys + num_amphibias + num_corpsefags) * 4 + (num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE + num_corpsefags * CORPSEFAG_OBS_SIZE) * 4
+                    floats_expected = num_snakes * SNAKE_OBS_SIZE + (num_preys + num_amphibias) * PREY_OBS_SIZE + num_corpsefags * CORPSEFAG_OBS_SIZE
 
                     data = recvall(conn, bytes_expected)
                     if not data:
@@ -252,7 +282,9 @@ def main():
                     family_ids = struct.unpack(f'<{num_snakes}i', data[:num_snakes * 4])
                     prey_family_ids = struct.unpack(f'<{num_preys}i', data[num_snakes * 4:(num_snakes + num_preys) * 4])
                     amphibia_family_ids = struct.unpack(f'<{num_amphibias}i', data[(num_snakes + num_preys) * 4:(num_snakes + num_preys + num_amphibias) * 4])
-                    obs_data = data[(num_snakes + num_preys + num_amphibias) * 4:]
+                    corpsefag_family_ids = struct.unpack(f'<{num_corpsefags}i', data[(num_snakes + num_preys + num_amphibias) * 4:(num_snakes + num_preys + num_amphibias + num_corpsefags) * 4])
+                    
+                    obs_data = data[(num_snakes + num_preys + num_amphibias + num_corpsefags) * 4:]
 
                     unpacked = struct.unpack(f'<{floats_expected}f', obs_data)
                     snake_obs = np.array(unpacked[:num_snakes * SNAKE_OBS_SIZE], dtype=np.float32).reshape(num_snakes, SNAKE_OBS_SIZE)
@@ -260,9 +292,11 @@ def main():
                     prey_start = num_snakes * SNAKE_OBS_SIZE
                     prey_end = prey_start + num_preys * PREY_OBS_SIZE
                     amphibia_end = prey_end + num_amphibias * PREY_OBS_SIZE
+                    corpsefag_end = amphibia_end + num_corpsefags * CORPSEFAG_OBS_SIZE
 
                     prey_obs = np.array(unpacked[prey_start:prey_end], dtype=np.float32).reshape(num_preys, PREY_OBS_SIZE)
                     amphibia_obs = np.array(unpacked[prey_end:amphibia_end], dtype=np.float32).reshape(num_amphibias, PREY_OBS_SIZE)
+                    corpsefag_obs = np.array(unpacked[amphibia_end:corpsefag_end], dtype=np.float32).reshape(num_corpsefags, CORPSEFAG_OBS_SIZE)
 
                     # Batch each unique loaded model's predictions in one call
                     # instead of one forward pass per agent.
@@ -295,6 +329,17 @@ def main():
                                     amphibia_action_map[i] = int(a)
                     actions.extend(amphibia_action_map[i] for i in range(num_amphibias))
 
+                    corpsefag_action_map = {i: 0 for i in range(num_corpsefags)}
+                    if corpsefag_model_paths:
+                        for path in set(corpsefag_model_paths):
+                            idxs = [i for i in range(num_corpsefags) if corpsefag_model_paths[corpsefag_family_ids[i] % len(corpsefag_model_paths)] == path]
+                            if idxs:
+                                acts, _ = loaded_corpsefag_models[path].predict(corpsefag_obs[idxs], deterministic=args.deterministic)
+                                for i, a in zip(idxs, acts):
+                                    corpsefag_action_map[i] = int(a)
+                    actions.extend(corpsefag_action_map[i] for i in range(num_corpsefags))
+
+
                     # For the selected snake only, run one extra single-row
                     # forward so the hooks capture just that snake's activations,
                     # and append them length-prefixed to the response.
@@ -305,7 +350,7 @@ def main():
                         sel_model.predict(snake_obs[selected:selected + 1], deterministic=True)
                         sel_blob = activation_blob(snake_stores[sel_path])
 
-                    response = struct.pack(f'<{num_snakes + num_preys + num_amphibias}i', *actions)
+                    response = struct.pack(f'<{num_snakes + num_preys + num_amphibias + num_corpsefags}i', *actions)
                     response += struct.pack('<i', int(sel_blob.shape[0]))
                     if sel_blob.shape[0]:
                         response += struct.pack(f'<{sel_blob.shape[0]}f', *sel_blob)

@@ -5,6 +5,7 @@ pub enum Species {
     Snake,
     Prey,
     Amphibia,
+    Corpsefag,
 }
 
 impl Species {
@@ -26,6 +27,12 @@ impl Species {
                 Terrain::Grass => 0.6,
                 Terrain::Road => 0.8,
                 Terrain::Water => 1.0,
+                Terrain::Rock => 0.0,
+            },
+            Species::Corpsefag => match terrain {
+                Terrain::Grass => 0.6,
+                Terrain::Road => 0.8,
+                Terrain::Water => 0.1,
                 Terrain::Rock => 0.0,
             },
         }

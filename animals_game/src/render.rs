@@ -185,6 +185,8 @@ pub fn render_sync(
     engine: Res<GameEngine>,
     segment_query: Query<Entity, With<SnakeSegment>>,
     apple_query: Query<Entity, With<Apple>>,
+    corpsefag_query: Query<Entity, With<CorpsefagSprite>>,
+    egg_query: Query<Entity, With<EggSprite>>,
     mut dirty: ResMut<RenderDirty>,
     prev: Res<PrevPositions>,
     settings: Res<OverlaySettings>,
@@ -198,6 +200,12 @@ pub fn render_sync(
         commands.entity(entity).despawn();
     }
     for entity in apple_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in corpsefag_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in egg_query.iter() {
         commands.entity(entity).despawn();
     }
 
@@ -237,6 +245,48 @@ pub fn render_sync(
                 Transform::from_translation(from),
                 Apple { prey_idx: p_idx },
                 Interp { from, to },
+            ));
+        }
+    }
+
+    for (c_idx, cf) in engine.0.corpsefags.iter().enumerate() {
+        if !cf.is_dead {
+            let to = Vec3::new(
+                cf.pos.0 as f32 * TILE_SIZE - offset_x,
+                cf.pos.1 as f32 * TILE_SIZE - offset_y,
+                0.0,
+            );
+            // Black color
+            let color = Color::srgb(0.0, 0.0, 0.0);
+            commands.spawn((
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                    ..default()
+                },
+                Transform::from_translation(to),
+                CorpsefagSprite { idx: c_idx },
+            ));
+        }
+    }
+
+    for (e_idx, egg) in engine.0.eggs.iter().enumerate() {
+        if !egg.is_dead {
+            let to = Vec3::new(
+                egg.pos.0 as f32 * TILE_SIZE - offset_x,
+                egg.pos.1 as f32 * TILE_SIZE - offset_y,
+                0.0,
+            );
+            // Yellowish white
+            let color = Color::srgb(0.9, 0.9, 0.6);
+            commands.spawn((
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::new(TILE_SIZE * 0.7, TILE_SIZE * 0.7)),
+                    ..default()
+                },
+                Transform::from_translation(to),
+                EggSprite { idx: e_idx },
             ));
         }
     }
@@ -356,14 +406,18 @@ pub fn draw_targets_overlay(
         if snake.is_dead {
             continue;
         }
-        if let Some(target_idx) = snake.tracked_target {
-            if let Some(&prey_pos) = prey_transforms.get(&target_idx) {
-                gizmos.line_2d(
-                    transform.translation.truncate(),
-                    prey_pos,
-                    Color::srgba(1.0, 0.0, 0.0, 0.6),
-                );
-            }
+        if let Some(target_pos) = snake.tracked_target {
+            let offset_x = (crate::constants::GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+            let offset_y = (crate::constants::GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+            let world_pos = bevy::math::Vec2::new(
+                target_pos.0 as f32 * TILE_SIZE - offset_x,
+                target_pos.1 as f32 * TILE_SIZE - offset_y,
+            );
+            gizmos.line_2d(
+                transform.translation.truncate(),
+                world_pos,
+                Color::srgba(1.0, 0.0, 0.0, 0.6),
+            );
         }
     }
 }

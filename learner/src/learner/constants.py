@@ -20,8 +20,12 @@ HUNGER_LIMIT = 1200
 # A snake only smells prey within this torus-wrapped Manhattan distance.
 SMELL_RANGE = 60
 
-# Prey / amphibia discrete action space: 0 Stand, 1 Up, 2 Right, 3 Down, 4 Left.
+# 3x3 grid (9) + nearest-corpse unit-direction (2) + normalized distance (1) + points (1)
+CORPSEFAG_OBS_SIZE = 18
+
+# Prey / amphibia / corpsefag discrete action space: 0 Stand, 1 Up, 2 Right, 3 Down, 4 Left.
 PREY_NUM_ACTIONS = 5
+CORPSEFAG_NUM_ACTIONS = 5
 # Snake discrete action space: 0 Straight, 1 Turn Right, 2 Turn Left.
 SNAKE_NUM_ACTIONS = 3
 
