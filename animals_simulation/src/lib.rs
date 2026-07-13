@@ -269,24 +269,29 @@ impl Simulation {
         // Terminal events: reproduction (grazed to `PREY_REPRODUCTION_GRASS`)
         // is the jackpot outcome, not a death, so it's rewarded rather than
         // punished (the parent slot terminates via `death_by_reproduction`
-        // and is replaced by its queued offspring); being eaten stays a flat
-        // penalty. A prey that is already long-dead (a pool slot awaiting
-        // revival) gets no reward at all, so it stops polluting the PPO batch
-        // with fake survival signal. Otherwise: threat shaping rewards moving
-        // away from the nearest snake head (for amphibia this naturally
-        // rewards fleeing into water, where snakes crawl at 0.2 but amphibia
-        // swim at 1.0), plus a flat per-tick danger-zone penalty when within
-        // 10 units of a snake head; base survival reward is reduced for
-        // standing still unless that stillness is legitimate mid-graze; and
-        // grazing itself is directly rewarded via the grass-eaten delta this
-        // tick. No crowding term: other prey aren't in the observation, so a
-        // reward on inter-prey distance would be unlearnable noise.
+        // and is replaced by its queued offspring); being eaten is a heavy
+        // penalty, symmetric with the +25 reproduction bonus, so "graze until
+        // eaten" can never out-earn fleeing early. A prey that is already
+        // long-dead (a pool slot awaiting revival) gets no reward at all, so
+        // it stops polluting the PPO batch with fake survival signal.
+        // Otherwise: threat shaping rewards moving away from the nearest
+        // snake head (for amphibia this naturally rewards fleeing into
+        // water, where snakes crawl at 0.2 but amphibia swim at 1.0), gated
+        // to `SMELL_RANGE` so a far-off, non-hunting snake doesn't inject
+        // shaping noise; inside the 10-unit danger zone grazing income is
+        // zeroed and the danger penalty raised so staying near a snake is
+        // strictly unprofitable regardless of grass, removing the old
+        // "graze vs. flee" tradeoff entirely. Base survival reward is
+        // reduced for standing still unless that stillness is legitimate
+        // mid-graze. No crowding term: other prey aren't in the
+        // observation, so a reward on inter-prey distance would be
+        // unlearnable noise.
         let prey_reward = |idx: usize| -> f32 {
             if self.game_state.prey_died_this_tick[idx] {
                 if self.game_state.preys[idx].death_by_reproduction {
                     25.0
                 } else {
-                    -10.0
+                    -25.0
                 }
             } else if self.game_state.preys[idx].is_dead {
                 0.0
@@ -294,20 +299,23 @@ impl Simulation {
                 let grass_delta = (self.game_state.preys[idx].grass_eaten - prev_grass_eaten[idx]).max(0.0);
 
                 let cur_snake_dist = min_dist_to_snake_head(&self.game_state, self.game_state.preys[idx].pos);
+                let in_danger_zone = matches!(cur_snake_dist, Some(d) if d < 10.0);
+
                 let shaping = match (prev_prey_threat[idx], cur_snake_dist) {
-                    (Some(prev), Some(cur)) => (cur - prev).clamp(-2.0, 2.0) * 0.1,
+                    (Some(prev), Some(cur))
+                        if prev < SMELL_RANGE as f32 || cur < SMELL_RANGE as f32 =>
+                    {
+                        (cur - prev).clamp(-2.0, 2.0) * 0.2
+                    }
                     _ => 0.0,
                 };
-                let danger_penalty = match cur_snake_dist {
-                    Some(d) if d < 10.0 => -0.15,
-                    _ => 0.0,
-                };
+                let danger_penalty = if in_danger_zone { -0.3 } else { 0.0 };
 
                 let mut base = 0.1;
                 if all_prey_actions[idx] == 0 && grass_delta <= 0.0 {
                     base -= 0.2; // punish standing still, unless it's legitimate mid-graze
                 }
-                let grass_reward = 0.5 * grass_delta;
+                let grass_reward = if in_danger_zone { 0.0 } else { 0.5 * grass_delta };
 
                 base + grass_reward + shaping + danger_penalty
             }

@@ -1,6 +1,8 @@
 # Reinforcement Learning Details
 
-The RL system trains three independent policies in a predator/prey loop: **Snake** (predator, self-play across snake slots), **Prey** (land-favoring herbivore), and **Amphibia** (water-favoring herbivore, same observation layout as Prey but a different terrain-speed profile — see `Species::speed_on` in `animals_engine/src/species.rs`). Each is trained against a _frozen_ snapshot of its counterpart(s): the snake env loads the current `prey_model`/`amphibia_model` as opponents, and the prey/amphibia envs load `snake_model` as the predator. When a counterpart checkpoint is missing or its observation shape doesn't match (see `learner/src/learner/model_utils.py`), it falls back to action `0` (stand still / go straight) rather than failing, so the pipeline can bootstrap from nothing.
+The RL system trains four independent policies. Three form a predator/prey co-evolution loop: **Snake** (predator, self-play across snake slots), **Prey** (land-favoring herbivore), and **Amphibia** (water-favoring herbivore, same observation layout as Prey but a different terrain-speed profile — see `Species::speed_on` in `animals_engine/src/species.rs`). Each is trained against a _frozen_ snapshot of its counterpart(s): the snake env loads the current `prey_model`/`amphibia_model` as opponents, and the prey/amphibia envs load `snake_model` as the predator. When a counterpart checkpoint is missing or its observation shape doesn't match (see `learner/src/learner/model_utils.py`), it falls back to action `0` (stand still / go straight) rather than failing, so the pipeline can bootstrap from nothing.
+
+The fourth, **Corpsefag** (scavenger — eats static snake corpses, lays eggs that hatch into new corpsefags), trains against a frozen `snake_model` the same way, but as a separate track: it isn't part of the snake↔prey/amphibia co-evolution loop, doesn't feed back into snake training, and isn't wired into `test.py`'s headless eval.
 
 ## Observation Space
 
@@ -55,13 +57,21 @@ This global threat vector exists because a prey's local 8x8 patch (roughly a 7-8
 
 ### Prey / Amphibia
 
-- **Death** (eaten this tick): `-10.0`.
-- **Reproduction** (`grass_eaten >= PREY_REPRODUCTION_GRASS` — `25.0`, `animals_engine/src/game.rs`, with no snake within 8 cells and the species under its alive cap): `+25.0` terminal reward. The trigger sets `death_by_reproduction` and `prey_died_this_tick` on the parent's slot so it terminates (`done = true`) through this branch rather than the `-10.0` death branch, and queues one offspring (spawned near the parent, inheriting its `family_id`) that fills the parent's slot — or another free pool slot — on revival. This reward was previously dead code: the flag that gates it was never set, so reproduction was silently worth `0.0` and un-observable (see below) — prey had no signal that grazing led anywhere.
+- **Death** (eaten this tick): `-25.0`, symmetric with the `+25.0` reproduction bonus. Raised from an earlier `-10.0`: at that value a prey that grazed for a while before getting eaten still ended its episode with a net-positive return, so "keep grazing, ignore the snake" was the reward-optimal policy — exactly the opposite of the intended fleeing behavior. Combined with the danger-zone changes below, being caught can no longer be out-earned by grazing income.
+- **Reproduction** (`grass_eaten >= PREY_REPRODUCTION_GRASS` — `25.0`, `animals_engine/src/game.rs`, with no snake within 8 cells and the species under its alive cap): `+25.0` terminal reward. The trigger sets `death_by_reproduction` and `prey_died_this_tick` on the parent's slot so it terminates (`done = true`) through this branch rather than the death branch, and queues one offspring (spawned near the parent, inheriting its `family_id`) that fills the parent's slot — or another free pool slot — on revival. This reward was previously dead code: the flag that gates it was never set, so reproduction was silently worth `0.0` and un-observable (see below) — prey had no signal that grazing led anywhere.
 - Long-dead pool slots (dead but not this tick, awaiting revival): reward exactly `0.0`, so they no longer pollute the PPO batch with fake `+0.1` survival signal.
-- Alive: base `0.1`; grazing `+0.5 * grass_eaten` delta this tick (~`+0.25`/tick on full grass; dense "seek fresh grass" signal that also drives exploration since grazed cells deplete); stand penalty `-0.2` only when standing AND not currently grazing (grass delta `<= 0`); threat shaping `0.1 * clamp(delta-distance to nearest snake head, ±2)` with the distance torus-wrapped; danger-zone penalty `-0.15` per tick while within 10 cells of a snake head.
+- Alive: base `0.1`; grazing `+0.5 * grass_eaten` delta this tick (~`+0.25`/tick on full grass; dense "seek fresh grass" signal that also drives exploration since grazed cells deplete) — **but zeroed while within the 10-cell danger zone** (below), so a prey can no longer profit from grazing next to a snake; stand penalty `-0.2` only when standing AND not currently grazing (grass delta `<= 0`); threat shaping `0.2 * clamp(delta-distance to nearest snake head, ±2)`, distance torus-wrapped, gated to only apply when the current or previous distance is within `SMELL_RANGE` (`60`, `animals_engine/src/lib.rs`) — a snake past smelling range isn't hunting this prey, so shaping on it was pure noise; danger-zone penalty `-0.3` per tick while within 10 cells of a snake head (raised from `-0.15`). With grazing income zeroed and the penalty raised, net reward inside the danger zone is strictly negative regardless of grass, so leaving is always better than staying — removing the old "graze vs. flee" tradeoff that made standing still near a snake reward-positive.
 - The per-sibling `+2.0` death bonus previously applied in the Python envs (`prey_environment.py` / `amphibia_environment.py`) has been removed (an uncontrollable event = pure variance, and it would have double-rewarded reproduction events).
 - **Crowding removed**: an earlier version penalized/shaped reward on distance to the nearest other prey. Other prey are not part of the observation (see above), so that term was reward on unobservable state — pure noise the policy could never act on. It has been deleted along with its `prev_prey_crowding` bookkeeping and the now-unused `min_dist_to_other_prey` helper in `animals_simulation/src/lib.rs`.
 - **Spawn-camping guard**: `GameState::spawn_prey` now also rejects a candidate cell within Chebyshev distance 8 of any live snake head (torus-aware, mirroring the reproduction gate), so the population-floor revival path can no longer drop a fresh prey directly in a snake's kill box to die on the next tick.
+
+### Corpsefag
+
+- **Death** (eaten by a snake this tick — the only way a corpsefag dies, no hunger mechanic): `-5.0`.
+- **Eat bonus**: `+30.0` when `points` increased this tick, or when `points` wrapped `2 -> 0` (the same tick a corpse-eat also crossed the 3-point egg-laying threshold and reset `points -= 3` — a plain `>` comparison would miss this wrap-around case, silently dropping the eat reward on exactly the tick egg-laying triggers).
+- Otherwise, **smell shaping**: `5.0 * clamp(delta_max_ray, -1.0, 1.0)`, where `max_ray` is the strongest of the 8 directional corpse-smell rays (`obs[9..17]`, see Observation Space above) — reward for moving toward a smelled corpse, penalty for moving away. No shaping gate by distance is needed here (unlike prey/snake) since the rays themselves are already zero outside their `133`-cell radius.
+- **Move cost**: `-0.01` per tick the action isn't "stand" (action 0).
+- No separate reproduction reward: egg-laying is triggered purely by accumulating `points >= 3` via eating, so its incentive is already captured by the eat bonus above.
 
 ## Hunger and Eating
 
@@ -74,16 +84,20 @@ Snakes do **not** share a single game-over condition. `GameState::step()` never 
 
 Prey and amphibia respawn the same way but through a separate, explicit call: `GameState::respawn_dead_preys()`. It is **not** called automatically inside `step()` — the training simulation (`animals_simulation/src/lib.rs`) calls `get_prey_observation` for every prey that died _before_ calling `respawn_dead_preys()`, so it can capture the true pre-respawn terminal observation; only after that does it respawn and compute the fresh post-respawn observation. Earlier, prey respawned inside `step()` itself, so every consumer (Python envs and `test.py`) was reporting the post-respawn (fresh-spawn) observation as if it were the terminal one — corrupting the PPO value function's bootstrap on death. The Bevy visualizer, which doesn't need terminal observations, just calls `respawn_dead_preys()` immediately after `step()` each tick.
 
-The PyO3 `Simulation.step()` returns a 12-tuple:
+The PyO3 `Simulation.step(actions, prey_actions, amphibia_actions, corpsefag_actions)` returns a nested tuple of four `(obs, rewards, dones, terminal_obs)` groups, one per actor type, in this order:
 
 ```
-(obs, rewards, dones, terminal_obs,
- prey_obs, prey_rewards, prey_dones,
- amphibia_obs, amphibia_rewards, amphibia_dones,
- prey_terminal_obs, amphibia_terminal_obs)
+(
+    (obs, rewards, dones, terminal_obs),                                # snake
+    (prey_obs, prey_rewards, prey_dones, prey_terminal_obs),            # prey
+    (amphibia_obs, amphibia_rewards, amphibia_dones, amphibia_terminal_obs),  # amphibia
+    (cf_obs, cf_rewards, cf_dones, cf_terminal_obs),                    # corpsefag
+)
 ```
 
-`dones[i]` / `prey_dones[i]` / `amphibia_dones[i]` are true exactly on the tick that actor died. The `*_obs` arrays are always post-respawn (next-episode) observations; the `*_terminal_obs` arrays are the true pre-respawn observations, meaningful only where the matching `dones` entry is true.
+Note `prey_actions`/`amphibia_actions` are passed as two separate lists but internally concatenated into one `preys` vector (prey indices first, then amphibia — `animals_simulation/src/lib.rs`), matching the engine's combined `GameState.preys` storage; the returned `prey_*`/`amphibia_*` arrays are already split back out by species.
+
+Within each group, `dones[i]` is true exactly on the tick that actor died. The `obs` array is always the post-respawn (next-episode) observation; `terminal_obs` is the true pre-respawn observation, meaningful only where the matching `dones` entry is true.
 
 Head-to-head collisions (two snakes' heads landing on the same cell in the same tick) kill **both** snakes — computed from a pre-step snapshot of alive snakes and their next head positions.
 
@@ -91,24 +105,29 @@ The Bevy visualizer (`animals_game`) still wants a classic "game over, press Spa
 
 ## The Vector Environment Trick & Mixed-Model / Mixed-Species Training
 
-Stable-Baselines3 natively only supports single-agent environments. To enable MARL without migrating to heavy libraries like PettingZoo, we built three custom `VecEnv`s, one per trained policy:
+Stable-Baselines3 natively only supports single-agent environments. To enable MARL without migrating to heavy libraries like PettingZoo, we built four custom `VecEnv`s, one per trained policy:
 
 - **`RustMultiSnakeVecEnv`** (`environment.py`) — trains the snake policy. Spawns multiprocessing workers, each managing multiple PyO3 `Simulation` instances (`preys_per_game` land prey + `amphibias_per_game` amphibia per instance, both driven by frozen opponent models). Randomly assigns snake slots to either the model actively being trained or one or more frozen "existing" past snake checkpoints (self-play across generations), exposing only the training slots to SB3.
 - **`RustPreyVecEnv`** (`prey_environment.py`) and **`RustAmphibiaVecEnv`** (`amphibia_environment.py`) — mirror structure, training the land/water herbivore policy against a frozen snake model. Both use the true pre-respawn `prey_terminal_obs`/`amphibia_terminal_obs` from `Simulation.step()` for SB3's `infos["terminal_observation"]`.
+- **`RustCorpsefagVecEnv`** (`corpsefag_environment.py`) — same mirror structure, training the scavenger policy against a frozen snake model. Also periodically calls `Simulation.spawn_corpses(n)` (on reset, and every 500 steps thereafter) to keep scavengeable corpse cells available, since a training simulation with no live snake deaths wouldn't otherwise generate any.
 
-All three batch their counterpart's action prediction: they gather every game's observations for that counterpart into one array and call `model.predict()` once per step instead of once per agent (`learner/src/learner/model_utils.py::predict_actions`), which matters because with 16+ games per process each step would otherwise trigger dozens of single-row PyTorch forward passes.
+All four batch their counterpart's action prediction: they gather every game's observations for that counterpart into one array and call `model.predict()` once per step instead of once per agent (`learner/src/learner/model_utils.py::predict_actions`), which matters because with 16+ games per process each step would otherwise trigger dozens of single-row PyTorch forward passes.
 
 ## Neural Network Architecture
 
-Every observation carries **two co-located 8×8 grids** — an entity/terrain grid and a
-grass-health grid (the latter lets a snake infer where prey have been feeding, since grazed
-cells read as depleted). Rather than flatten them into the MLP (which discards their spatial
-structure), all three policies use a shared custom feature extractor,
+Every snake/prey/amphibia observation carries **two co-located 8×8 grids** — an entity/terrain
+grid and a grass-health grid (the latter lets a snake infer where prey have been feeding, since
+grazed cells read as depleted). Rather than flatten them into the MLP (which discards their spatial
+structure), the snake/prey/amphibia policies use a shared custom feature extractor,
 `GridCnnExtractor` (`learner/src/learner/policy.py`): it reshapes the two grids into a
 2-channel 8×8 image, runs two padded 3×3 convs (2→16→32 channels) + a linear projection to 128
 features, and concatenates the raw scalar features (smell/threat direction+distance, hunger,
 length). The grid/scalar index slices live in `learner/src/learner/constants.py`
 (`SNAKE_GRID1/2`, `PREY_GRID1/2`) and mirror the write order in `animals_engine/src/game.rs`.
+
+**Corpsefag** does not use `GridCnnExtractor` — its observation is a single 3×3 grid plus 8
+scalar smell rays and a points scalar (18 floats total, no 8×8 grids to convolve), so
+`train_corpsefag.py` uses SB3's plain `MlpPolicy` with no custom feature extractor.
 
 The snake observation carries a **third grid** (`SNAKE_GRID3`, `[133..197)`): the coarse
 visitation-recency grid described above. It's at a different spatial scale than grid1/grid2 (8
@@ -123,6 +142,8 @@ On top of that extractor:
 - **Snake**: MLP `pi=[256, 256]`, `vf=[256, 256]`.
 - **Prey / Amphibia**: MLP `pi=[128, 128]`, `vf=[128, 128]` — simpler action space (5 discrete
   moves vs 3 turns), so a smaller head is sufficient and faster to train.
+- **Corpsefag**: SB3's default `MlpPolicy` architecture (no custom `net_arch` or feature
+  extractor) — the smallest observation (18 floats) of the four policies needs the least capacity.
 - Framework: PyTorch via Stable-Baselines3, Algorithm: PPO.
 
 ## PPO Hyperparameters & CPU Throughput
@@ -133,6 +154,7 @@ We instead use:
 
 - Snake: `batch_size=4096`, `n_steps=512`, `ent_coef=0.01` (measured ~14,000 steps/s, a ~4.5x wall-clock speedup over SB3 defaults).
 - Prey / Amphibia: `batch_size=2048`, `ent_coef=0.02` — lower than the snake's exploration needs less encouragement now that the reward includes dense threat-distance shaping rather than only sparse survive/death. Prey now uses `n_steps=128` paired with a small-pool env config (~160 envs total: 16 games x 10 max preys) for roughly 24 PPO updates per 500k training steps; amphibia is unchanged at `n_steps=512` until its own retrain.
+- Corpsefag: `batch_size=1024`, `n_steps=512`, `ent_coef=0.01`, `gamma=0.99` — smaller batch than snake/prey since its observation and action space are both the simplest of the four policies.
 
 Changing any observation size invalidates saved checkpoints in `learner/models/` (SB3 `.load()` fails on shape mismatch) — retrain or delete them. See `CLAUDE.md` for the full list of files that must stay in sync.
 
