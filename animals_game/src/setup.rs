@@ -26,21 +26,30 @@ pub fn in_game_setup(
     mut status: ResMut<AppStatus>,
     mut images: ResMut<Assets<Image>>,
     config: Res<MatchConfig>,
+    corpse_sprite_query: Query<Entity, With<CorpseSprite>>,
+    mut corpse_index: ResMut<CorpseSpriteIndex>,
 ) {
     // If it's an AI match configured from the menu, we need to update the GameEngine
     if config.is_ai {
         engine.0 = animals_engine::GameState::new(
-            GRID_WIDTH, 
-            GRID_HEIGHT, 
-            config.snakes.len(), 
-            config.num_preys, 
-            config.num_preys.max(100), 
+            GRID_WIDTH,
+            GRID_HEIGHT,
+            config.snakes.len(),
+            config.num_preys,
+            config.num_preys.max(100),
             config.num_amphibias,
             config.num_amphibias.max(100),
             10,
             false,
             false, // AI-driven snakes: auto-steer would fight the policy's learned dynamics
         );
+        // Fresh GameState starts with an empty `corpses` set; drop any
+        // leftover corpse sprites from a previous match (see the matching
+        // comment in `logic::keyboard_input`'s restart handler).
+        for entity in corpse_sprite_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        corpse_index.0.clear();
     }
 
     spawn_map(&mut commands, &engine.0, &mut images);

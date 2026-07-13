@@ -70,6 +70,13 @@ pub struct Apple {
 #[derive(Component)]
 pub struct CorpsefagSprite;
 
+/// Marks a corpse-cell sprite. Kept out of `SnakeSegment` so `render_sync`'s
+/// per-frame despawn/respawn-all loop (needed for segments, which move every
+/// tick) doesn't also sweep up corpses, which are static and tracked
+/// incrementally instead — see `CorpseSpriteIndex`.
+#[derive(Component)]
+pub struct CorpseSprite;
+
 #[derive(Component)]
 pub struct EggSprite;
 

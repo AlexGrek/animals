@@ -314,6 +314,51 @@ pub fn spawn_particles_for_egg_eats(
     }
 }
 
+/// Incrementally syncs corpse-cell sprites from `state.corpses_added`/
+/// `corpses_removed` (populated this tick by `GameState::step()` and
+/// `remove_dead_snakes()` — see their doc comments). Corpse cells are static
+/// once created, so unlike snake segments they're spawned once and left
+/// alone rather than despawned/respawned every tick; that used to mean
+/// re-creating every corpse sprite in the whole (potentially huge,
+/// ever-growing) `corpses` set on every tick regardless of how many actually
+/// changed, which is what caused FPS to collapse after a large die-off left
+/// thousands of corpse cells behind.
+pub fn sync_corpse_sprites(
+    commands: &mut Commands,
+    state: &GameState,
+    index: &mut CorpseSpriteIndex,
+) {
+    for cell in &state.corpses_removed {
+        if let Some(entity) = index.0.remove(cell) {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    if state.corpses_added.is_empty() {
+        return;
+    }
+
+    let offset_x = (GRID_WIDTH as f32 * TILE_SIZE) / 2.0;
+    let offset_y = (GRID_HEIGHT as f32 * TILE_SIZE) / 2.0;
+    for &(cx, cy) in &state.corpses_added {
+        let to = Vec3::new(
+            cx as f32 * TILE_SIZE - offset_x,
+            cy as f32 * TILE_SIZE - offset_y,
+            0.0,
+        );
+        let entity = commands.spawn((
+            Sprite {
+                color: Color::srgb(0.5, 0.5, 0.5),
+                custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
+                ..default()
+            },
+            Transform::from_translation(to),
+            CorpseSprite,
+        )).id();
+        index.0.insert((cx, cy), entity);
+    }
+}
+
 pub fn update_particles(
     mut commands: Commands,
     time: Res<Time>,
@@ -452,25 +497,6 @@ pub fn render_sync(
         }
     }
 
-    // Corpses: static gray cells left behind by reaped dead snakes. They're no
-    // longer in the `snakes` Vec (they don't animate or count), just obstacles.
-    for &(cx, cy) in &engine.0.corpses {
-        let to = Vec3::new(
-            cx as f32 * TILE_SIZE - offset_x,
-            cy as f32 * TILE_SIZE - offset_y,
-            0.0,
-        );
-        commands.spawn((
-            Sprite {
-                color: Color::srgb(0.5, 0.5, 0.5),
-                custom_size: Some(Vec2::new(TILE_SIZE, TILE_SIZE)),
-                ..default()
-            },
-            Transform::from_translation(to),
-            SnakeSegment,
-            Interp { from: to, to },
-        ));
-    }
 
     for (s_idx, snake) in engine.0.snakes.iter().enumerate() {
         for (i, pos) in snake.body.iter().enumerate() {

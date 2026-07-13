@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use std::collections::HashMap;
 use animals_engine::GameState;
 use crossbeam_channel::Receiver;
 
@@ -88,6 +89,14 @@ impl Default for StatsTracker {
 /// on ticks that actually moved the game, instead of every frame.
 #[derive(Resource)]
 pub struct RenderDirty(pub bool);
+
+/// Tracks which corpse cells already have a spawned sprite entity, keyed by
+/// grid cell. Corpse cells are static once created, so unlike snake segments
+/// they're synced incrementally from `GameState.corpses_added`/`corpses_removed`
+/// (a few cells a tick) instead of being despawned and fully respawned every
+/// tick from the whole (potentially huge, ever-growing) `corpses` set.
+#[derive(Resource, Default)]
+pub struct CorpseSpriteIndex(pub HashMap<(i32, i32), Entity>);
 
 /// High-level state of the app, surfaced to the player as on-screen text.
 #[derive(Resource, Clone, PartialEq)]

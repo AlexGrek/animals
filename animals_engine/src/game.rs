@@ -58,6 +58,14 @@ pub struct GameState {
     /// that living snakes read as `-0.5` and die on collision. Stays empty in
     /// training (which respawns instead of reaping), so it costs nothing there.
     pub corpses: HashSet<(i32, i32)>,
+    /// Corpse cells added/removed this `step()` call (plus, for additions,
+    /// `remove_dead_snakes()` immediately after it — see that method's doc
+    /// comment). Cleared at the top of every `step()`. Lets a consumer like
+    /// the Bevy renderer apply an incremental diff to its corpse sprites
+    /// instead of re-scanning the whole (potentially huge, ever-growing)
+    /// `corpses` set every tick.
+    pub corpses_added: Vec<(i32, i32)>,
+    pub corpses_removed: Vec<(i32, i32)>,
     pub eggs: Vec<EggState>,
     pub corpsefags: Vec<CorpsefagState>,
     pub dead_snake_heads: Vec<(f32, f32)>,
@@ -93,6 +101,8 @@ impl GameState {
             auto_steer,
             steps: 0,
             corpses: HashSet::new(),
+            corpses_added: Vec::new(),
+            corpses_removed: Vec::new(),
             eggs: Vec::new(),
             corpsefags: Vec::with_capacity(num_corpsefags),
             dead_snake_heads: Vec::new(),
@@ -231,7 +241,11 @@ impl GameState {
     /// state each frame, so this is safe there.
     pub fn remove_dead_snakes(&mut self) {
         for snake in self.snakes.iter().filter(|s| s.is_dead) {
-            self.corpses.extend(snake.body.iter().copied());
+            for &cell in &snake.body {
+                if self.corpses.insert(cell) {
+                    self.corpses_added.push(cell);
+                }
+            }
         }
         self.snakes.retain(|s| !s.is_dead);
         // `cell_changed` is a per-snake parallel Vec that's only ever written
@@ -307,6 +321,8 @@ impl GameState {
         self.snake_births.clear();
         self.cf_eats.clear();
         self.egg_eats.clear();
+        self.corpses_added.clear();
+        self.corpses_removed.clear();
         
         let was_dead_snakes: Vec<bool> = self.snakes.iter().map(|s| s.is_dead).collect();
         for p in &mut self.preys {
@@ -584,6 +600,7 @@ impl GameState {
                     let tx = (cx + dx).rem_euclid(self.grid_width);
                     let ty = (cy + dy).rem_euclid(self.grid_height);
                     if self.corpses.remove(&(tx, ty)) {
+                        self.corpses_removed.push((tx, ty));
                         self.cf_eats.push((tx as f32, ty as f32));
                         eaten = true;
                     }
@@ -1312,19 +1329,30 @@ impl GameState {
             }
         }
 
+        // Squared-distance gate first: `self.corpses` never shrinks back down
+        // once a large snake die-off has populated it (see its doc comment),
+        // so this loop's cost is bounded by lifetime corpse count, not the
+        // current population. Comparing `dist_sq` against `133^2` before
+        // taking a sqrt/atan2 skips both for every corpse outside smell
+        // range without changing which corpse wins each sector (sqrt is
+        // monotonic, so the comparison order is preserved).
+        const SMELL_RADIUS: f32 = 133.0;
+        const SMELL_RADIUS_SQ: i32 = (SMELL_RADIUS * SMELL_RADIUS) as i32;
         let mut ray_distances = [f32::MAX; 8];
         for &corpse in &self.corpses {
             let (dx, dy) = self.torus_delta(pos, corpse);
-            let d = ((dx * dx + dy * dy) as f32).sqrt();
-            if d <= 133.0 {
-                let mut angle = (dy as f32).atan2(dx as f32);
-                if angle < 0.0 {
-                    angle += std::f32::consts::TAU;
-                }
-                let sector = ((angle + std::f32::consts::TAU / 16.0) / (std::f32::consts::TAU / 8.0)).floor() as usize % 8;
-                if d < ray_distances[sector] {
-                    ray_distances[sector] = d;
-                }
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq > SMELL_RADIUS_SQ {
+                continue;
+            }
+            let d = (dist_sq as f32).sqrt();
+            let mut angle = (dy as f32).atan2(dx as f32);
+            if angle < 0.0 {
+                angle += std::f32::consts::TAU;
+            }
+            let sector = ((angle + std::f32::consts::TAU / 16.0) / (std::f32::consts::TAU / 8.0)).floor() as usize % 8;
+            if d < ray_distances[sector] {
+                ray_distances[sector] = d;
             }
         }
 

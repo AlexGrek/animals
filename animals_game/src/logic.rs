@@ -5,7 +5,7 @@ use crossbeam_channel::TryRecvError;
 use crate::ai::queue_ai_inference;
 use crate::components::*;
 use crate::constants::*;
-use crate::render::{spawn_map, spawn_particles_for_dead_preys, spawn_particles_for_snake_deaths, spawn_particles_for_cf_births, spawn_particles_for_snake_births, spawn_particles_for_cf_eats, spawn_particles_for_egg_eats};
+use crate::render::{spawn_map, spawn_particles_for_dead_preys, spawn_particles_for_snake_deaths, spawn_particles_for_cf_births, spawn_particles_for_snake_births, spawn_particles_for_cf_eats, spawn_particles_for_egg_eats, sync_corpse_sprites};
 use crate::resources::*;
 
 pub fn keyboard_input(
@@ -14,6 +14,8 @@ pub fn keyboard_input(
     mut dirty: ResMut<RenderDirty>,
     mut commands: Commands,
     map_query: Query<Entity, With<MapTile>>,
+    corpse_sprite_query: Query<Entity, With<CorpseSprite>>,
+    mut corpse_index: ResMut<CorpseSpriteIndex>,
     mut status: ResMut<AppStatus>,
     ai_server: Option<Res<AiServerProcess>>,
     mut images: ResMut<Assets<Image>>,
@@ -81,6 +83,15 @@ pub fn keyboard_input(
         for entity in map_query.iter() {
             commands.entity(entity).despawn();
         }
+        // Corpse sprites are tracked incrementally (`CorpseSpriteIndex`), not
+        // rebuilt from `engine.0.corpses` every tick, so a restart must
+        // explicitly clear them out — the fresh `GameState` starts with an
+        // empty `corpses` set and would never emit removal events for the
+        // old ones.
+        for entity in corpse_sprite_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        corpse_index.0.clear();
         spawn_map(&mut commands, &engine.0, &mut images);
         dirty.0 = true;
 
@@ -110,6 +121,7 @@ pub fn game_tick(
     mut act_buffer: ResMut<ActivationBuffer>,
     speed: Res<GameSpeed>,
     mut stats: ResMut<StatsTracker>,
+    mut corpse_index: ResMut<CorpseSpriteIndex>,
 ) {
     if matches!(*status, AppStatus::Loading(_) | AppStatus::Failed(_)) {
         return;
@@ -175,6 +187,7 @@ pub fn game_tick(
                     // abundance. game_over below still fires only if the predators
                     // go fully extinct (count hits 0).
                     engine.0.remove_dead_snakes();
+                    sync_corpse_sprites(&mut commands, &engine.0, &mut corpse_index);
                     worker.awaiting = false;
                     stats.inference_steps += 1;
                 }
@@ -203,6 +216,7 @@ pub fn game_tick(
             // and leave the active list (so the player's death still reduces the
             // count to 0 -> game_over, with the corpse left visible on the grid).
             engine.0.remove_dead_snakes();
+            sync_corpse_sprites(&mut commands, &engine.0, &mut corpse_index);
         }
 
         let alive_count = engine.0.snakes.iter().filter(|s| !s.is_dead).count();
