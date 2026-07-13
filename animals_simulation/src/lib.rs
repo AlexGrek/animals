@@ -384,15 +384,29 @@ impl Simulation {
                     }
                 }
                 
-                if cf.points > prev_cf_points[i] || (cf.points == 0 && prev_cf_points[i] == 2) {
+                let ate = cf.points > prev_cf_points[i] || (cf.points == 0 && prev_cf_points[i] == 2);
+                if ate {
                     reward += 30.0; // Increased eat reward
                 } else {
                     let delta = max_ray - prev_cf_max_rays[i];
                     reward += 5.0 * delta.max(-1.0).min(1.0); // Shaping reward
                 }
-                
+
+                let blind = prev_cf_max_rays[i] == 0.0 && max_ray == 0.0;
                 if let Some(&act) = corpsefag_actions.get(i) {
-                    if act != 0 {
+                    if blind && !ate {
+                        // Nothing smelled before or after this tick, so the
+                        // shaping term above is always exactly 0.0 here. A
+                        // flat per-move cost then made "stand still forever"
+                        // reward-optimal whenever no corpse was in smell
+                        // range (0.0 beats -0.01), so trained-from-scratch
+                        // corpsefags learned to freeze instead of searching.
+                        // Flip the incentive while blind: penalize standing
+                        // instead of moving, so exploration is worth it.
+                        if act == 0 {
+                            reward -= 0.03;
+                        }
+                    } else if act != 0 {
                         reward -= 0.01;
                     }
                 }

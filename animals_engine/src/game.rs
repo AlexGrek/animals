@@ -461,7 +461,7 @@ impl GameState {
                 let px_after = self.preys[i].pos.0.round() as i32;
                 let py_after = self.preys[i].pos.1.round() as i32;
                 let terrain_after = self.map.get_terrain(px_after, py_after);
-                if terrain_after == Terrain::Rock {
+                if terrain_after == Terrain::Rock || self.corpses.contains(&(px_after, py_after)) {
                     self.preys[i].pos = prev_pos;
                 }
             }
@@ -568,7 +568,7 @@ impl GameState {
                 let terrain_after = self.map.get_terrain(px_after, py_after);
                 
                 let grid_pos_after = (px_after, py_after);
-                let mut blocked = terrain_after == Terrain::Rock || terrain_after == Terrain::Water;
+                let mut blocked = terrain_after == Terrain::Rock || self.corpses.contains(&grid_pos_after);
                 if !blocked {
                     for p in &self.preys {
                         if !p.is_dead && (p.pos.0.round() as i32, p.pos.1.round() as i32) == grid_pos_after {
