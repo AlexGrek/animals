@@ -10,7 +10,7 @@ use crate::{HUNGER_DEATH_LIMIT, HUNGER_LIMIT, PREY_OBS_SIZE, SMELL_RANGE, SNAKE_
 /// trigger in `GameState::step`). Also used as the denominator for the
 /// reproduction-progress observation scalar (`get_prey_observation`'s
 /// `[67]`), so the two stay in lockstep by construction.
-pub const PREY_REPRODUCTION_GRASS: f32 = 25.0;
+pub const PREY_REPRODUCTION_GRASS: f32 = 50.0;
 
 #[derive(Clone, Debug)]
 pub struct PreyState {

@@ -38,17 +38,17 @@ Three Rust crates (cargo workspace) + one Python package:
 
 - **`animals_engine`** — headless game logic. `GameState` holds N `SnakeState`s; `get_relative_observation(snake_index)` produces the per-snake observation. Snakes run independent per-snake episodes: on death a snake is respawned in place via `respawn_dead()` rather than ending the whole game, so one snake's mistake never truncates the others. No I/O, no globals — instances are fully independent.
 - **`animals_simulation`** — PyO3 `cdylib` wrapping `GameState` as a Python `Simulation` class (`new(num_snakes)`, `reset() -> obs per snake`, `step(actions: list) -> (obs, rewards, dones, terminal_obs)`, `get_stats()`). `dones[i]` is true on the tick snake i died; `obs[i]` is that snake's post-respawn observation and `terminal_obs[i]` its pre-respawn (true terminal) observation on death ticks. The reward function lives here (`step`), not in the engine.
-- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick: `num_snakes * 66` f32 observations out, `num_snakes` i32 actions back. The engine no longer sets `game_over` itself, so `game_tick` sets it when it sees a dead snake to preserve the manual "freeze, press Space to restart" UX.
+- **`animals_game`** — Bevy 2D visualizer. In `--ai` mode it picks a free ephemeral TCP port, spawns `learner.play` as a child process (killed via `Drop` on `AiServerProcess`), and exchanges raw little-endian bytes per tick containing the observations for snakes, preys, amphibias, and corpsefags out, and actions back. The engine no longer sets `game_over` itself, so `game_tick` sets it when it sees a dead snake to preserve the manual "freeze, press Space to restart" UX.
 - **`learner`** (Python, in `learner/src/learner/`) — `environment.py` defines `RustMultiSnakeVecEnv`, a custom SB3 `VecEnv` that presents only the training snakes to PPO while internally computing actions for frozen "existing" opponent models ("shared brain" self-play trick — see `docs/learning.md`), and `MultiProcRustVecEnv`, a pipe-based multiprocess wrapper around it. `main.py` trains, `play.py` is the TCP inference server for Bevy, `test.py` runs headless evals.
 
 ### Cross-language invariants
 
-The **66-float observation** (8×8 relative grid + 2 food-direction floats) and the **3-action discrete space** (0=straight, 1=right, 2=left) are hardcoded in four places that must stay in sync:
+The observation sizes (Snake: 197, Prey/Amphibia: 132, Corpsefag: 18) and the discrete spaces are hardcoded in four places that must stay in sync:
 
-1. `animals_engine/src/snake.rs` — `get_relative_observation` returns `[f32; 66]`
-2. `learner/src/learner/environment.py` — `spaces.Box(shape=(66,))` (declared twice: both VecEnv classes)
-3. `learner/src/learner/play.py` — struct packing `num_snakes * 66 * 4` bytes
-4. `animals_game/src/main.rs` — byte payload sizing in `game_tick`
+1. `animals_engine/src/game.rs` — `get_relative_observation`, `get_prey_observation`, etc.
+2. `learner/src/learner/constants.py` — `SNAKE_OBS_SIZE`, `PREY_OBS_SIZE`, `CORPSEFAG_OBS_SIZE`
+3. `learner/src/learner/play.py` — struct unpacking based on these sizes
+4. `animals_game/src/ai.rs` — byte payload sizing in `game_tick`
 
 Changing the observation also invalidates saved checkpoints in `learner/models/` (SB3 load will fail on shape mismatch) — retrain or delete them.
 
