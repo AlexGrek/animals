@@ -1449,7 +1449,7 @@ mod tests {
 
     #[test]
     fn prey_beyond_smell_range_is_not_sensed() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn prey_within_smell_range_sets_direction() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -1477,7 +1477,7 @@ mod tests {
         state.preys[0].is_dead = false;
 
         state.update_targets();
-        assert_eq!(state.snakes[0].tracked_target, Some(0));
+        assert_eq!(state.snakes[0].tracked_target, Some((50, 60)));
 
         let obs = state.get_relative_observation(0);
         assert!((obs[64] - 1.0).abs() < 1e-5, "forward component should be ~1.0, got {}", obs[64]);
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn target_dropped_when_prey_leaves_smell_range() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
         state.snakes[0].body = vec![(50, 50)];
         state.snakes[0].head_pos = (50.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -1495,7 +1495,7 @@ mod tests {
         state.preys[0].pos = (50.0, 60.0);
         state.preys[0].is_dead = false;
         state.update_targets();
-        assert_eq!(state.snakes[0].tracked_target, Some(0));
+        assert_eq!(state.snakes[0].tracked_target, Some((50, 60)));
 
         state.preys[0].pos = (50.0, 81.0); // Manhattan distance 31 > SMELL_RANGE
         state.update_targets();
@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn smell_wraps_around_torus_edge() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, true, false);
+        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
         state.snakes[0].body = vec![(1, 50)];
         state.snakes[0].head_pos = (1.0, 50.0);
         state.snakes[0].direction = Direction::Up;
@@ -1513,24 +1513,6 @@ mod tests {
         state.preys[0].is_dead = false;
 
         state.update_targets();
-        assert_eq!(state.snakes[0].tracked_target, Some(0), "prey must be sensed across the torus wrap");
+        assert_eq!(state.snakes[0].tracked_target, Some((98, 50)), "prey must be sensed across the torus wrap");
     }
-
-    pub fn spawn_corpses(&mut self, num: usize) {
-        let mut rng = rand::thread_rng();
-        for _ in 0..num {
-            let mut x;
-            let mut y;
-            loop {
-                x = rng.gen_range(0..self.grid_width);
-                y = rng.gen_range(0..self.grid_height);
-                let terrain = self.map.get_terrain(x, y);
-                if terrain != Terrain::Rock && terrain != Terrain::Water {
-                    break;
-                }
-            }
-            self.corpses.push((x, y));
-        }
-    }
-
 }
