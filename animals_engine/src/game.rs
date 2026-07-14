@@ -1625,7 +1625,10 @@ mod tests {
     /// bug where the observation builder skipped dead snakes entirely.
     #[test]
     fn dead_snake_corpse_is_visible_as_obstacle() {
-        let mut state = GameState::new(20, 20, 2, 0, 0, 0, 0, 0, true, false);
+        // 100x100 (not 20x20): a small map's random terrain can leave no free
+        // spawn cell, hanging `GameState::new`'s spawn loop — see the same
+        // fix in `remove_dead_snakes_drops_only_the_dead` above.
+        let mut state = GameState::new(100, 100, 2, 0, 0, 0, 0, 0, true, false);
 
         // Snake 1 (index 1) dies via a wall collision, leaving a body behind.
         state.snakes[1].body = vec![(5, 5), (5, 4), (5, 3)];
@@ -1645,12 +1648,16 @@ mod tests {
 
     #[test]
     fn prey_beyond_smell_range_is_not_sensed() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
-        state.snakes[0].body = vec![(50, 50)];
-        state.snakes[0].head_pos = (50.0, 50.0);
+        // 200x200 (not 100x100): SMELL_RANGE (60) exceeds half of a 100-wide
+        // torus map's single-axis span (50), so no single-axis offset on a
+        // 100x100 map can ever exceed it — a wider map keeps this test's
+        // "one axis, clearly out of range" design valid.
+        let mut state = GameState::new(200, 200, 1, 1, 1, 0, 0, 0, true, false);
+        state.snakes[0].body = vec![(100, 100)];
+        state.snakes[0].head_pos = (100.0, 100.0);
         state.snakes[0].direction = Direction::Up;
         state.snakes[0].tracked_target = None;
-        state.preys[0].pos = (50.0, 85.0); // Manhattan distance 35 > SMELL_RANGE (30)
+        state.preys[0].pos = (100.0, 165.0); // Manhattan distance 65 > SMELL_RANGE (60)
         state.preys[0].is_dead = false;
 
         state.update_targets();
@@ -1678,22 +1685,25 @@ mod tests {
         let obs = state.get_relative_observation(0);
         assert!((obs[64] - 1.0).abs() < 1e-5, "forward component should be ~1.0, got {}", obs[64]);
         assert!(obs[65].abs() < 1e-5, "right component should be ~0.0, got {}", obs[65]);
-        assert!((obs[66] - 10.0 / 30.0).abs() < 1e-5, "distance should be 10/SMELL_RANGE, got {}", obs[66]);
+        assert!((obs[66] - 10.0 / 60.0).abs() < 1e-5, "distance should be 10/SMELL_RANGE, got {}", obs[66]);
     }
 
     #[test]
     fn target_dropped_when_prey_leaves_smell_range() {
-        let mut state = GameState::new(100, 100, 1, 1, 1, 0, 0, 0, true, false);
-        state.snakes[0].body = vec![(50, 50)];
-        state.snakes[0].head_pos = (50.0, 50.0);
+        // 200x200 (not 100x100): SMELL_RANGE (60) exceeds half of a 100-wide
+        // torus map's single-axis span (50) — see the same fix in
+        // `prey_beyond_smell_range_is_not_sensed` above.
+        let mut state = GameState::new(200, 200, 1, 1, 1, 0, 0, 0, true, false);
+        state.snakes[0].body = vec![(100, 100)];
+        state.snakes[0].head_pos = (100.0, 100.0);
         state.snakes[0].direction = Direction::Up;
         state.snakes[0].tracked_target = None;
-        state.preys[0].pos = (50.0, 60.0);
+        state.preys[0].pos = (100.0, 110.0);
         state.preys[0].is_dead = false;
         state.update_targets();
-        assert_eq!(state.snakes[0].tracked_target, Some((50, 60)));
+        assert_eq!(state.snakes[0].tracked_target, Some((100, 110)));
 
-        state.preys[0].pos = (50.0, 81.0); // Manhattan distance 31 > SMELL_RANGE
+        state.preys[0].pos = (100.0, 165.0); // Manhattan distance 65 > SMELL_RANGE (60)
         state.update_targets();
         assert_eq!(state.snakes[0].tracked_target, None, "target must be dropped once out of smell range");
     }
