@@ -6,6 +6,9 @@ import struct
 import sys
 import numpy as np
 import torch
+# Small-batch CPU inference on many threads has thread-pool overhead that
+# often costs more than it saves; cap it down for this per-tick workload.
+torch.set_num_threads(4)
 from stable_baselines3 import PPO
 
 from learner.constants import SNAKE_OBS_SIZE, PREY_OBS_SIZE, CORPSEFAG_OBS_SIZE
@@ -278,25 +281,28 @@ def main():
                     data = recvall(conn, bytes_expected)
                     if not data:
                         break
+                    # Freeze to immutable bytes once so the np.frombuffer views
+                    # below are safe zero-copy reads instead of per-field
+                    # struct.unpack + tuple->array copies.
+                    data = bytes(data)
 
-                    family_ids = struct.unpack(f'<{num_snakes}i', data[:num_snakes * 4])
-                    prey_family_ids = struct.unpack(f'<{num_preys}i', data[num_snakes * 4:(num_snakes + num_preys) * 4])
-                    amphibia_family_ids = struct.unpack(f'<{num_amphibias}i', data[(num_snakes + num_preys) * 4:(num_snakes + num_preys + num_amphibias) * 4])
-                    corpsefag_family_ids = struct.unpack(f'<{num_corpsefags}i', data[(num_snakes + num_preys + num_amphibias) * 4:(num_snakes + num_preys + num_amphibias + num_corpsefags) * 4])
-                    
-                    obs_data = data[(num_snakes + num_preys + num_amphibias + num_corpsefags) * 4:]
+                    family_ids = np.frombuffer(data, dtype='<i4', count=num_snakes, offset=0)
+                    prey_family_ids = np.frombuffer(data, dtype='<i4', count=num_preys, offset=num_snakes * 4)
+                    amphibia_family_ids = np.frombuffer(data, dtype='<i4', count=num_amphibias, offset=(num_snakes + num_preys) * 4)
+                    corpsefag_family_ids = np.frombuffer(data, dtype='<i4', count=num_corpsefags, offset=(num_snakes + num_preys + num_amphibias) * 4)
 
-                    unpacked = struct.unpack(f'<{floats_expected}f', obs_data)
-                    snake_obs = np.array(unpacked[:num_snakes * SNAKE_OBS_SIZE], dtype=np.float32).reshape(num_snakes, SNAKE_OBS_SIZE)
+                    obs_offset = (num_snakes + num_preys + num_amphibias + num_corpsefags) * 4
+                    all_obs = np.frombuffer(data, dtype='<f4', count=floats_expected, offset=obs_offset)
+                    snake_obs = all_obs[:num_snakes * SNAKE_OBS_SIZE].reshape(num_snakes, SNAKE_OBS_SIZE)
 
                     prey_start = num_snakes * SNAKE_OBS_SIZE
                     prey_end = prey_start + num_preys * PREY_OBS_SIZE
                     amphibia_end = prey_end + num_amphibias * PREY_OBS_SIZE
                     corpsefag_end = amphibia_end + num_corpsefags * CORPSEFAG_OBS_SIZE
 
-                    prey_obs = np.array(unpacked[prey_start:prey_end], dtype=np.float32).reshape(num_preys, PREY_OBS_SIZE)
-                    amphibia_obs = np.array(unpacked[prey_end:amphibia_end], dtype=np.float32).reshape(num_amphibias, PREY_OBS_SIZE)
-                    corpsefag_obs = np.array(unpacked[amphibia_end:corpsefag_end], dtype=np.float32).reshape(num_corpsefags, CORPSEFAG_OBS_SIZE)
+                    prey_obs = all_obs[prey_start:prey_end].reshape(num_preys, PREY_OBS_SIZE)
+                    amphibia_obs = all_obs[prey_end:amphibia_end].reshape(num_amphibias, PREY_OBS_SIZE)
+                    corpsefag_obs = all_obs[amphibia_end:corpsefag_end].reshape(num_corpsefags, CORPSEFAG_OBS_SIZE)
 
                     # Batch each unique loaded model's predictions in one call
                     # instead of one forward pass per agent.
@@ -350,10 +356,10 @@ def main():
                         sel_model.predict(snake_obs[selected:selected + 1], deterministic=True)
                         sel_blob = activation_blob(snake_stores[sel_path])
 
-                    response = struct.pack(f'<{num_snakes + num_preys + num_amphibias + num_corpsefags}i', *actions)
+                    response = np.asarray(actions, dtype='<i4').tobytes()
                     response += struct.pack('<i', int(sel_blob.shape[0]))
                     if sel_blob.shape[0]:
-                        response += struct.pack(f'<{sel_blob.shape[0]}f', *sel_blob)
+                        response += sel_blob.astype('<f4', copy=False).tobytes()
                     conn.sendall(response)
 
             except ConnectionResetError:

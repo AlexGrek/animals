@@ -9,12 +9,12 @@ tasks:
   play:
     desc: Play the Snake game manually
     cmds:
-      - cargo run -p animals_game
+      - cargo run --release -p animals_game
 
   play-ai:
     desc: "Watch the AI play the Snake game using the trained model (Rust will spawn the Python server automatically). Example: task play-ai -- --snakes 4 --model v1 --model v2"
     cmds:
-      - cargo run -p animals_game -- --ai {{.CLI_ARGS}}
+      - cargo run --release -p animals_game -- --ai {{.CLI_ARGS}}
 
   test-ai:
     desc: "Run the simulation purely in python at full speed without bevy, outputting results to json. Example: task test-ai -- --snakes 4 --model v1 --output results.json"

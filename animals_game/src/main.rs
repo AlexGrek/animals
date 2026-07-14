@@ -16,9 +16,8 @@ use animals_engine::GameState;
 
 use constants::{GRID_WIDTH, GRID_HEIGHT};
 use resources::{
-    GameEngine, TickTimer, AppStatus, RenderDirty, PrevPositions, GameSpeed,
+    GameEngine, TickTimer, AppStatus, RenderDirty, MapDirty, PrevPositions, GameSpeed,
     OverlaySettings, SelectedSnake, ActivationBuffer, AiWorker, AppState, MatchConfig, StatsTracker,
-    CorpseSpriteIndex
 };
 
 fn main() {
@@ -64,7 +63,7 @@ fn main() {
         .insert_resource(TickTimer(Timer::from_seconds(0.033, TimerMode::Repeating)))
         .insert_resource(AiWorker(None))
         .insert_resource(RenderDirty(true))
-        .insert_resource(CorpseSpriteIndex::default())
+        .insert_resource(MapDirty(true))
         .insert_resource(AppStatus::Running)
         .insert_resource(PrevPositions::default())
         .insert_resource(GameSpeed(1.0))

@@ -12,17 +12,22 @@ pub fn snake_color(_idx: usize, _total: usize) -> Color {
 /// buffer, in the same layout the Python inference server expects.
 pub fn gather_observations(game: &GameState) -> Vec<f32> {
     let mut obs = Vec::with_capacity(game.snakes.len() * SNAKE_OBS_SIZE + game.preys.len() * PREY_OBS_SIZE + game.corpsefags.len() * CORPSEFAG_OBS_SIZE);
+    // Batch functions build the occupancy context once for the whole
+    // population instead of once per snake/prey (see `ObsContext` in
+    // `animals_engine::game`).
+    let all_snake_obs = game.get_all_snake_observations();
     for s in 0..game.snakes.len() {
-        obs.extend_from_slice(&game.get_relative_observation(s));
+        obs.extend_from_slice(&all_snake_obs[s]);
     }
+    let all_prey_obs = game.get_all_prey_observations_batched();
     for p in 0..game.preys.len() {
         if game.preys[p].species == Species::Prey {
-            obs.extend_from_slice(&game.get_prey_observation(p));
+            obs.extend_from_slice(&all_prey_obs[p]);
         }
     }
     for p in 0..game.preys.len() {
         if game.preys[p].species == Species::Amphibia {
-            obs.extend_from_slice(&game.get_prey_observation(p));
+            obs.extend_from_slice(&all_prey_obs[p]);
         }
     }
     for c in 0..game.corpsefags.len() {

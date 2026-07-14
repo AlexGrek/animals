@@ -26,8 +26,7 @@ pub fn in_game_setup(
     mut status: ResMut<AppStatus>,
     mut images: ResMut<Assets<Image>>,
     config: Res<MatchConfig>,
-    corpse_sprite_query: Query<Entity, With<CorpseSprite>>,
-    mut corpse_index: ResMut<CorpseSpriteIndex>,
+    mut map_dirty: ResMut<MapDirty>,
 ) {
     // If it's an AI match configured from the menu, we need to update the GameEngine
     if config.is_ai {
@@ -43,16 +42,10 @@ pub fn in_game_setup(
             false,
             false, // AI-driven snakes: auto-steer would fight the policy's learned dynamics
         );
-        // Fresh GameState starts with an empty `corpses` set; drop any
-        // leftover corpse sprites from a previous match (see the matching
-        // comment in `logic::keyboard_input`'s restart handler).
-        for entity in corpse_sprite_query.iter() {
-            commands.entity(entity).despawn();
-        }
-        corpse_index.0.clear();
     }
 
     spawn_map(&mut commands, &engine.0, &mut images);
+    map_dirty.0 = true;
 
     let is_ai = config.is_ai;
     let num_snakes = engine.0.snakes.len();

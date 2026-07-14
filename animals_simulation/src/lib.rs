@@ -78,19 +78,21 @@ impl Simulation {
 
     fn reset(&mut self) -> PyResult<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
         self.game_state = GameState::new(400, 400, self.num_snakes, self.initial_preys, self.max_preys, self.initial_amphibias, self.max_amphibias, self.num_corpsefags, true, false);
+        let all_snake_obs = self.game_state.get_all_snake_observations();
         let mut obs = Vec::new();
         for i in 0..self.num_snakes {
-            obs.push(self.game_state.get_relative_observation(i).to_vec());
+            obs.push(all_snake_obs[i].to_vec());
         }
-        
+
+        let all_prey_obs = self.game_state.get_all_prey_observations_batched();
         let mut prey_obs = Vec::new();
         for i in 0..self.max_preys {
-            prey_obs.push(self.game_state.get_prey_observation(i).to_vec());
+            prey_obs.push(all_prey_obs[i].to_vec());
         }
 
         let mut amphibia_obs = Vec::new();
         for i in self.max_preys..(self.max_preys + self.max_amphibias) {
-            amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
+            amphibia_obs.push(all_prey_obs[i].to_vec());
         }
 
         let mut corpsefag_obs = Vec::new();
@@ -102,17 +104,19 @@ impl Simulation {
     }
 
     fn get_all_prey_observations(&self) -> PyResult<Vec<Vec<f32>>> {
+        let all_prey_obs = self.game_state.get_all_prey_observations_batched();
         let mut obs = Vec::new();
         for i in 0..self.max_preys {
-            obs.push(self.game_state.get_prey_observation(i).to_vec());
+            obs.push(all_prey_obs[i].to_vec());
         }
         Ok(obs)
     }
 
     fn get_all_amphibia_observations(&self) -> PyResult<Vec<Vec<f32>>> {
+        let all_prey_obs = self.game_state.get_all_prey_observations_batched();
         let mut obs = Vec::new();
         for i in self.max_preys..(self.max_preys + self.max_amphibias) {
-            obs.push(self.game_state.get_prey_observation(i).to_vec());
+            obs.push(all_prey_obs[i].to_vec());
         }
         Ok(obs)
     }
@@ -353,17 +357,19 @@ impl Simulation {
         self.game_state.respawn_dead();
         self.game_state.respawn_dead_preys();
 
+        let all_snake_obs = self.game_state.get_all_snake_observations();
         let mut obs = Vec::with_capacity(self.num_snakes);
         for i in 0..self.num_snakes {
-            obs.push(self.game_state.get_relative_observation(i).to_vec());
+            obs.push(all_snake_obs[i].to_vec());
         }
+        let all_prey_obs = self.game_state.get_all_prey_observations_batched();
         let mut prey_obs = Vec::with_capacity(self.max_preys);
         for i in 0..self.max_preys {
-            prey_obs.push(self.game_state.get_prey_observation(i).to_vec());
+            prey_obs.push(all_prey_obs[i].to_vec());
         }
         let mut amphibia_obs = Vec::with_capacity(self.max_amphibias);
         for i in self.max_preys..(self.max_preys + self.max_amphibias) {
-            amphibia_obs.push(self.game_state.get_prey_observation(i).to_vec());
+            amphibia_obs.push(all_prey_obs[i].to_vec());
         }
 
         let mut cf_rewards = Vec::with_capacity(self.num_corpsefags);

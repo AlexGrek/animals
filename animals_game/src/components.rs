@@ -67,18 +67,21 @@ pub struct Apple {
     pub prey_idx: usize,
 }
 
+/// Carries the corpsefag's stable `GameState.corpsefags` Vec index so
+/// `render_sync` can reuse the same entity across ticks instead of
+/// despawning/respawning it (dead slots are revived in place, never
+/// reindexed, so the index is a stable key).
 #[derive(Component)]
-pub struct CorpsefagSprite;
+pub struct CorpsefagSprite {
+    pub cf_idx: usize,
+}
 
-/// Marks a corpse-cell sprite. Kept out of `SnakeSegment` so `render_sync`'s
-/// per-frame despawn/respawn-all loop (needed for segments, which move every
-/// tick) doesn't also sweep up corpses, which are static and tracked
-/// incrementally instead — see `CorpseSpriteIndex`.
+/// Carries the egg's stable `GameState.eggs` Vec index for entity reuse
+/// (eggs are never removed/reindexed, so the index is a stable key).
 #[derive(Component)]
-pub struct CorpseSprite;
-
-#[derive(Component)]
-pub struct EggSprite;
+pub struct EggSprite {
+    pub egg_idx: usize,
+}
 
 #[derive(Component)]
 pub struct MapTile;

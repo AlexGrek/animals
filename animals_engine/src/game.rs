@@ -73,6 +73,120 @@ pub struct GameState {
     pub snake_births: Vec<(f32, f32)>,
     pub cf_eats: Vec<(f32, f32)>,
     pub egg_eats: Vec<(f32, f32)>,
+    /// Flat indices (`y * grid_width + x`) of grass tiles currently below full
+    /// health (`grass_health < 1.0`), including cells still in the
+    /// post-empty dormancy wait. Lets `step`'s regrowth pass touch only cells
+    /// that actually need it instead of scanning the whole map every tick.
+    /// A cell is pushed here the first time it's eaten below `1.0` and popped
+    /// (via `swap_remove`, order doesn't matter) once regrowth brings it back
+    /// to exactly `1.0`. Starts empty: `Map::new` leaves every grass tile at
+    /// full health.
+    pub active_grass_cells: Vec<u32>,
+    /// Parallel to the map's flat tile arrays: whether a cell's index is
+    /// currently present in `active_grass_cells`, so re-eating an already-active
+    /// cell doesn't push a duplicate entry.
+    pub grass_tracked: Vec<bool>,
+}
+
+/// Per-tick, observer-independent occupancy grid built once and shared across
+/// every `get_relative_observation`/`get_prey_observation` call in a batch,
+/// instead of each call rebuilding its own `HashSet`s from every snake's body
+/// and every prey/egg.
+///
+/// One `u8` bitflag entry per grid cell. Only tracks facts that don't depend
+/// on *which* actor is asking:
+/// - `BODY_ANY` — any snake's body cell, dead or alive (any snake, including
+///   whichever snake ends up being the observer).
+/// - `BODY_ALIVE` — an *alive* snake's body cell.
+/// - `HEAD_ALIVE` — an *alive* snake's head (`body[0]`) cell.
+/// - `PREY_OR_EGG` — a living prey or a living egg.
+///
+/// Observer-specific distinctions (own body vs. enemy body/head for a snake)
+/// are NOT baked into the grid — they're resolved by the caller checking its
+/// own (small, ≤ a dozen cells) body `Vec` directly, same cost as before.
+/// This works because of the exact precedence order in both observation
+/// functions: a cell that's the observer's own body/head always hits the
+/// "own body" branch *before* the `HEAD_ALIVE`/`BODY_ANY` branches are
+/// checked, so it doesn't matter that those flags don't exclude the
+/// observer's own cells — they're shadowed by construction. See the
+/// doc comments on `get_relative_observation`/`get_prey_observation` for the
+/// authoritative precedence order this must continue to match.
+pub struct ObsContext {
+    grid_width: i32,
+    grid_height: i32,
+    cells: Vec<u8>,
+}
+
+impl ObsContext {
+    const BODY_ANY: u8 = 1 << 0;
+    const BODY_ALIVE: u8 = 1 << 1;
+    const HEAD_ALIVE: u8 = 1 << 2;
+    const PREY_OR_EGG: u8 = 1 << 3;
+
+    /// Builds the grid from the current game state. O(total body length +
+    /// prey count + egg count) — once, not once per actor.
+    pub fn build(state: &GameState) -> Self {
+        let mut cells = vec![0u8; (state.grid_width * state.grid_height) as usize];
+        let w = state.grid_width;
+        let h = state.grid_height;
+        let flat = |x: i32, y: i32| -> usize {
+            (y.rem_euclid(h) * w + x.rem_euclid(w)) as usize
+        };
+
+        for s in &state.snakes {
+            for (bi, &(x, y)) in s.body.iter().enumerate() {
+                let idx = flat(x, y);
+                cells[idx] |= Self::BODY_ANY;
+                if !s.is_dead {
+                    cells[idx] |= Self::BODY_ALIVE;
+                    if bi == 0 {
+                        cells[idx] |= Self::HEAD_ALIVE;
+                    }
+                }
+            }
+        }
+        for p in &state.preys {
+            if !p.is_dead {
+                let idx = flat(p.pos.0.round() as i32, p.pos.1.round() as i32);
+                cells[idx] |= Self::PREY_OR_EGG;
+            }
+        }
+        for e in &state.eggs {
+            if !e.is_dead {
+                let idx = flat(e.pos.0, e.pos.1);
+                cells[idx] |= Self::PREY_OR_EGG;
+            }
+        }
+
+        Self { grid_width: w, grid_height: h, cells }
+    }
+
+    #[inline]
+    fn at(&self, x: i32, y: i32) -> u8 {
+        let xw = x.rem_euclid(self.grid_width);
+        let yw = y.rem_euclid(self.grid_height);
+        self.cells[(yw * self.grid_width + xw) as usize]
+    }
+
+    #[inline]
+    fn body_any(&self, x: i32, y: i32) -> bool {
+        self.at(x, y) & Self::BODY_ANY != 0
+    }
+
+    #[inline]
+    fn body_alive(&self, x: i32, y: i32) -> bool {
+        self.at(x, y) & Self::BODY_ALIVE != 0
+    }
+
+    #[inline]
+    fn head_alive(&self, x: i32, y: i32) -> bool {
+        self.at(x, y) & Self::HEAD_ALIVE != 0
+    }
+
+    #[inline]
+    fn prey_or_egg(&self, x: i32, y: i32) -> bool {
+        self.at(x, y) & Self::PREY_OR_EGG != 0
+    }
 }
 
 impl GameState {
@@ -110,6 +224,8 @@ impl GameState {
             snake_births: Vec::new(),
             cf_eats: Vec::new(),
             egg_eats: Vec::new(),
+            active_grass_cells: Vec::new(),
+            grass_tracked: vec![false; (width * height) as usize],
         };
 
         for i in 0..num_snakes {
@@ -253,7 +369,12 @@ impl GameState {
         // filtering in lockstep — keeps the invariant `cell_changed.len() ==
         // snakes.len()` without depending on its stale contents.
         self.cell_changed.resize(self.snakes.len(), false);
-        self.update_targets();
+        // No `update_targets()` call here: every caller (`animals_game`'s
+        // `game_tick`) invokes this immediately after `step()` in the same
+        // tick, and `step()` already refreshes targets at its top — so
+        // targets are never stale by the time the next observation is read.
+        // Reaping a dead snake's entity doesn't itself invalidate any smell
+        // target (a snake's target is prey/egg position, not another snake).
     }
 
     pub fn set_direction(&mut self, snake_index: usize, new_dir: Direction) {
@@ -369,21 +490,34 @@ impl GameState {
             }
         }
 
-        // 0. Regenerate grass
-        for i in 0..(self.map.width * self.map.height) as usize {
-            if self.map.tiles[i] == Terrain::Grass {
-                if self.map.grass_health[i] == 0.0 {
-                    self.map.grass_empty_timer[i] += 1;
-                    if self.map.grass_empty_timer[i] >= 300 {
-                        self.map.grass_health[i] += 0.05;
-                    }
-                } else if self.map.grass_health[i] < 1.0 {
-                    self.map.grass_empty_timer[i] = 0;
-                    self.map.grass_health[i] += 0.05;
-                    if self.map.grass_health[i] > 1.0 {
-                        self.map.grass_health[i] = 1.0;
-                    }
+        // 0. Regenerate grass — only cells tracked as below full health
+        // (`active_grass_cells`), instead of scanning every map cell. Every
+        // cell here is guaranteed to be `Terrain::Grass` (terrain is static
+        // after `Map::generate` and only grass tiles are ever added to this
+        // set, in the "Prey feeding" section below), so the old
+        // `tiles[i] == Terrain::Grass` guard is redundant and dropped.
+        let mut i = 0;
+        while i < self.active_grass_cells.len() {
+            let idx = self.active_grass_cells[i] as usize;
+            if self.map.grass_health[idx] == 0.0 {
+                self.map.grass_empty_timer[idx] += 1;
+                if self.map.grass_empty_timer[idx] >= 300 {
+                    self.map.grass_health[idx] += 0.05;
                 }
+            } else if self.map.grass_health[idx] < 1.0 {
+                self.map.grass_empty_timer[idx] = 0;
+                self.map.grass_health[idx] += 0.05;
+                if self.map.grass_health[idx] > 1.0 {
+                    self.map.grass_health[idx] = 1.0;
+                }
+            }
+
+            if self.map.grass_health[idx] >= 1.0 {
+                self.grass_tracked[idx] = false;
+                self.active_grass_cells.swap_remove(i);
+                // Swapped-in element at `i` still needs processing; don't advance.
+            } else {
+                i += 1;
             }
         }
 
@@ -478,6 +612,13 @@ impl GameState {
                     self.map.grass_empty_timer[tile_idx] = 0;
                 }
                 self.preys[i].grass_eaten += eat_amount;
+                // This cell is now below full health (eat_amount > 0 was just
+                // subtracted from a value <= 1.0) — track it for the regrowth
+                // pass above if it isn't already.
+                if !self.grass_tracked[tile_idx] {
+                    self.grass_tracked[tile_idx] = true;
+                    self.active_grass_cells.push(tile_idx as u32);
+                }
             }
         }
 
@@ -869,7 +1010,12 @@ impl GameState {
     pub fn respawn_dead_preys(&mut self) {
         // Preys are now dynamically managed via reproduction in `step()`.
         // Dead preys stay in the inactive pool until revived.
-        self.update_targets();
+        //
+        // No `update_targets()` call here: every caller (`animals_simulation`'s
+        // `step`, `animals_game`'s `game_tick`) invokes this immediately after
+        // `GameState::step()` in the same tick, and `step()` already refreshes
+        // every snake's target at its top — so a snake's `tracked_target`
+        // can't be stale by the time the next observation reads it.
     }
 
     pub fn spawn_prey(&mut self, index: usize) {
@@ -1079,6 +1225,32 @@ impl GameState {
     ///   the exploration reward's memory (see `animals_simulation`'s reward
     ///   function) so a memoryless policy can act on "where have I been".
     pub fn get_relative_observation(&self, snake_index: usize) -> [f32; SNAKE_OBS_SIZE] {
+        let ctx = ObsContext::build(self);
+        self.get_relative_observation_with_ctx(snake_index, &ctx)
+    }
+
+    /// Batch form of `get_relative_observation`: builds the occupancy context
+    /// once (O(total body length + prey/egg count)) instead of once per snake,
+    /// then produces every snake's observation from it. Used by hot paths that
+    /// need the whole population's observations every tick (`animals_simulation`,
+    /// `animals_game::gather_observations`); prefer this over calling
+    /// `get_relative_observation` in a loop.
+    pub fn get_all_snake_observations(&self) -> Vec<[f32; SNAKE_OBS_SIZE]> {
+        let ctx = ObsContext::build(self);
+        (0..self.snakes.len())
+            .map(|i| self.get_relative_observation_with_ctx(i, &ctx))
+            .collect()
+    }
+
+    /// Core of `get_relative_observation`, taking a pre-built `ObsContext` so
+    /// callers producing observations for many snakes in the same tick
+    /// (`get_all_snake_observations`) only pay the O(total body length + prey
+    /// count) context-build cost once. Behavior (including the precedence
+    /// order documented on `get_relative_observation`) is unchanged — the
+    /// only difference from the pre-context implementation is where each
+    /// classification's underlying fact ("is there a body cell/alive head
+    /// here") comes from.
+    fn get_relative_observation_with_ctx(&self, snake_index: usize, ctx: &ObsContext) -> [f32; SNAKE_OBS_SIZE] {
         let mut obs = [0.0; SNAKE_OBS_SIZE];
         let snake = &self.snakes[snake_index];
         if snake.body.is_empty() { return obs; }
@@ -1088,39 +1260,21 @@ impl GameState {
         let vec_straight = dir.to_vector();
         let vec_right = dir.turn_right().to_vector();
 
-        // Build occupancy sets once (O(total_length)), then each of the 64 grid
-        // cells is an O(1) lookup instead of a linear scan over every body Vec.
+        // Own body is checked directly against the snake's own (small, ≤ a
+        // dozen cells) body Vec — cheaper than hashing it, and this is what
+        // lets the shared `ctx` stay observer-independent (see `ObsContext`'s
+        // doc comment for why not distinguishing "own" vs "enemy" in the grid
+        // itself is still correct).
         //
-        // Dead snakes are NOT skipped here: a corpse's body stays on the grid
-        // as a solid obstacle (the Bevy visualizer never respawns snakes; it
-        // freezes them in place until the whole match ends), and the collision
-        // check in `step()` doesn't exempt dead bodies either — so a corpse
-        // that's invisible in this observation is a wall the snake can't see
-        // and will walk straight into. Only the "-0.8 head" danger marker is
-        // alive-only, since a dead snake can't trigger a head-to-head kill.
-        let own_body: HashSet<(i32, i32)> = snake.body.iter().copied().collect();
-        let mut enemy_bodies: HashSet<(i32, i32)> = HashSet::new();
-        let mut enemy_heads: HashSet<(i32, i32)> = HashSet::new();
-        for (j, s) in self.snakes.iter().enumerate() {
-            if j == snake_index { continue; }
-            if !s.is_dead {
-                if let Some(&h) = s.body.first() {
-                    enemy_heads.insert(h);
-                }
-            }
-            enemy_bodies.extend(s.body.iter().copied());
-        }
-        let mut prey_cells: HashSet<(i32, i32)> = HashSet::new();
-        for p in &self.preys {
-            if !p.is_dead {
-                prey_cells.insert((p.pos.0.round() as i32, p.pos.1.round() as i32));
-            }
-        }
-        for e in &self.eggs {
-            if !e.is_dead {
-                prey_cells.insert(e.pos);
-            }
-        }
+        // Dead snakes are NOT skipped by `ctx`'s BODY_ANY flag: a corpse's
+        // body stays on the grid as a solid obstacle (the Bevy visualizer
+        // never respawns snakes; it freezes them in place until the whole
+        // match ends), and the collision check in `step()` doesn't exempt
+        // dead bodies either — so a corpse that's invisible in this
+        // observation is a wall the snake can't see and will walk straight
+        // into. Only the "-0.8 head" danger marker is alive-only (`ctx`'s
+        // HEAD_ALIVE), since a dead snake can't trigger a head-to-head kill.
+        let own_body = &snake.body;
 
         let mut idx = 0;
         for f in -3..=4 {
@@ -1132,13 +1286,13 @@ impl GameState {
                 let cell = (cx_wrapped, cy_wrapped);
                 let terrain = self.map.get_terrain(cx_wrapped, cy_wrapped);
 
-                obs[idx] = if prey_cells.contains(&cell) {
+                obs[idx] = if ctx.prey_or_egg(cx_wrapped, cy_wrapped) {
                     1.0
                 } else if terrain == Terrain::Rock || own_body.contains(&cell) {
                     -1.0
-                } else if enemy_heads.contains(&cell) {
+                } else if ctx.head_alive(cx_wrapped, cy_wrapped) {
                     -0.8
-                } else if enemy_bodies.contains(&cell) || self.corpses.contains(&cell) {
+                } else if ctx.body_any(cx_wrapped, cy_wrapped) || self.corpses.contains(&cell) {
                     // A corpse (dead snake's leftover body) is a solid obstacle
                     // just like a living snake's body — same -0.5 the model saw
                     // when dead snakes still lived in the `snakes` Vec.
@@ -1219,19 +1373,32 @@ impl GameState {
     ///   clamped to `1.0`. Makes the reproduction goal (see `step`) directly
     ///   observable instead of latent state the policy has to infer blind.
     pub fn get_prey_observation(&self, prey_index: usize) -> [f32; PREY_OBS_SIZE] {
+        let ctx = ObsContext::build(self);
+        self.get_prey_observation_with_ctx(prey_index, &ctx)
+    }
+
+    /// Batch form of `get_prey_observation`: builds the occupancy context once
+    /// instead of once per prey/amphibia, then produces every observation from
+    /// it. Used by hot paths that need the whole population's observations
+    /// every tick (`animals_simulation`, `animals_game::gather_observations`);
+    /// prefer this over calling `get_prey_observation` in a loop.
+    pub fn get_all_prey_observations_batched(&self) -> Vec<[f32; PREY_OBS_SIZE]> {
+        let ctx = ObsContext::build(self);
+        (0..self.preys.len())
+            .map(|i| self.get_prey_observation_with_ctx(i, &ctx))
+            .collect()
+    }
+
+    /// Core of `get_prey_observation`, taking a pre-built `ObsContext` (see
+    /// `get_all_prey_observations_batched`). Behavior (including the
+    /// precedence order documented on `get_prey_observation`) is unchanged.
+    /// Note this uses `ctx`'s `BODY_ALIVE`/`HEAD_ALIVE` flags (alive snakes
+    /// only), matching the original loop's `if snake.is_dead { continue; }` —
+    /// unlike the snake observation, a dead snake's body is invisible here.
+    fn get_prey_observation_with_ctx(&self, prey_index: usize, ctx: &ObsContext) -> [f32; PREY_OBS_SIZE] {
         let mut obs = [0.0; PREY_OBS_SIZE];
         let prey = &self.preys[prey_index];
         let prey_grid_pos = (prey.pos.0.round() as i32, prey.pos.1.round() as i32);
-
-        let mut snake_bodies: HashSet<(i32, i32)> = HashSet::new();
-        let mut snake_heads: HashSet<(i32, i32)> = HashSet::new();
-        for snake in &self.snakes {
-            if snake.is_dead { continue; }
-            if let Some(&h) = snake.body.first() {
-                snake_heads.insert(h);
-            }
-            snake_bodies.extend(snake.body.iter().copied());
-        }
 
         let mut idx = 0;
         for dy in -3..=4 { // North-South (Up is always North)
@@ -1240,14 +1407,13 @@ impl GameState {
                 let cy = prey_grid_pos.1 + dy;
                 let cx_wrapped = cx.rem_euclid(self.grid_width);
                 let cy_wrapped = cy.rem_euclid(self.grid_height);
-                let cell = (cx_wrapped, cy_wrapped);
                 let terrain = self.map.get_terrain(cx_wrapped, cy_wrapped);
 
                 obs[idx] = if terrain == Terrain::Rock {
                     -1.0
-                } else if snake_heads.contains(&cell) {
+                } else if ctx.head_alive(cx_wrapped, cy_wrapped) {
                     -0.8
-                } else if snake_bodies.contains(&cell) {
+                } else if ctx.body_alive(cx_wrapped, cy_wrapped) {
                     -0.5
                 } else {
                     prey.species.speed_on(terrain) * 0.5
@@ -1260,8 +1426,10 @@ impl GameState {
         // Unit direction (torus-wrapped shortest path) + normalized distance to
         // the nearest alive snake head.
         let mut closest: Option<(i32, i32, f32)> = None;
-        for h in &snake_heads {
-            let (dx, dy) = self.torus_delta(prey_grid_pos, *h);
+        for snake in &self.snakes {
+            if snake.is_dead { continue; }
+            let Some(&h) = snake.body.first() else { continue };
+            let (dx, dy) = self.torus_delta(prey_grid_pos, h);
             let d = ((dx * dx + dy * dy) as f32).sqrt();
             if closest.map_or(true, |(_, _, cd)| d < cd) {
                 closest = Some((dx, dy, d));
